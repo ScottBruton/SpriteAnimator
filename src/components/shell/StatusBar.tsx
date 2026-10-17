@@ -34,6 +34,9 @@ export function StatusBar({ fps }: { fps: number }) {
 
 function hint(workspace: string, tool: string): string {
   if (workspace === 'assembly') return 'Map behaviours to actions and test the unit in the arena.';
+  if (workspace === 'animate') {
+    return 'Select one sprite. Corners = Rot Z (main) · edge mids = Rot X/Y · 3D node = orbit (Shift = Y). Rotating a parent swings children; rotate the child alone for local spin.';
+  }
   switch (tool) {
     case 'rotate':
       return 'Drag to rotate about the pivot. Shift snaps to 15°.';
@@ -48,7 +51,7 @@ function hint(workspace: string, tool: string): string {
     case 'pan':
       return 'Drag to pan. Wheel zooms. Space + drag also pans.';
     default:
-      return 'Click to select, drag to move. Shift adds to selection. Double-click to edit sprite. Drag pivot onto an attachment to link.';
+      return 'Pink = rotation pivot (put on the shoulder). Green = parent socket only. Double-click sprite → double-tap image to set pivot, or select a green and “Move pivot here”. Link: child pivot → parent green.';
   }
 }
 

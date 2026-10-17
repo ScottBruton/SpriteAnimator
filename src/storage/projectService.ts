@@ -4,23 +4,27 @@ import { blobStore } from '@/state/blobStore';
 import { useEditorStore } from '@/state/editorStore';
 import { useProjectStore } from '@/state/projectStore';
 import { getStorage, SETTING_LAST_PROJECT } from './index';
+import { prepareProjectForSave } from './prepareProject';
 
 /** Persist the current project document + any blobs not yet stored. */
 export async function saveCurrentProject(): Promise<void> {
   const storage = getStorage();
   const { project, globalAssets } = useProjectStore.getState();
+  const toSave = prepareProjectForSave(project);
+  // Keep in-memory project folder list in sync with what we write.
+  useProjectStore.setState({ project: toSave });
   const stored = new Set(await storage.listBlobKeys());
   const referenced = new Set<string>([
-    ...project.assets.map((a) => a.imagePath),
+    ...toSave.assets.map((a) => a.imagePath),
     ...globalAssets.map((a) => a.imagePath),
-    ...project.audio.map((a) => a.audioPath),
+    ...toSave.audio.map((a) => a.audioPath),
   ]);
   for (const key of referenced) {
     if (stored.has(key)) continue;
     const blob = blobStore.get(key);
     if (blob) await storage.putBlob(key, blob.bytes);
   }
-  await storage.saveProject(project);
+  await storage.saveProject(toSave);
   await storage.saveGlobalAssets(globalAssets);
   await storage.setSetting(SETTING_LAST_PROJECT, project.id);
   useProjectStore.getState().markSaved();

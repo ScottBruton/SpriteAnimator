@@ -30,17 +30,24 @@ same functions in `packages/animation-core`, so an exported assembly is reproduc
 
 ## Instance transform
 
-`Transform2D = { position, rotation, scale, flipX, flipY }` is always expressed **in the parent
-frame** (see below), with the instance's **pivot at the node origin**.
+`Transform2D = { position, rotation, rotationX, rotationY, scale, flipX, flipY }` is always
+expressed **in the parent frame** (see below), with the instance's **pivot at the node origin**.
+
+- `rotation` — Z (screen-normal), degrees, clockwise on screen.
+- `rotationX` / `rotationY` — tilt about the horizontal / vertical axes (degrees). These affect
+  drawing only via a projected affine foreshortening; they do **not** change the parent frame
+  children inherit.
 
 ```
 S' = scale ⊙ (flipX ? -1 : 1, flipY ? -1 : 1)
-M_node = T(position) · R(rotation) · S(S')             localNodeMatrix()
-M_draw = M_node · T(-pivot)                            drawMatrixFromNode()
+M_node = T(position) · R(rotation Z) · S(S')                      localNodeMatrix()
+M_draw = M_node · P(rotationX, rotationY) · T(-pivot)             drawMatrixFromNode()
 ```
 
-- `M_node` maps the pivot-centred frame into the parent frame. Rotation and scale therefore
+- `M_node` maps the pivot-centred frame into the parent frame. Z rotation and scale therefore
   always happen **about the pivot**.
+- `P` is `eulerXYAffine` (Ry then Rx, then a simple perspective divide) approximated as an affine
+  matrix so Skia can still draw with a single Image transform.
 - `M_draw` maps image-local pixels into the parent frame and is what the renderer uses to draw the
   PNG (`<Image x=0 y=0 width height>` under `Group matrix=M_draw_world`).
 

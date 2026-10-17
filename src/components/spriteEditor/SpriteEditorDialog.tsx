@@ -4,7 +4,7 @@ import { Canvas, Circle, Group, Image as SkiaImage, Line, Path, Rect, Skia } fro
 import { GestureDetector, usePanGesture, useTapGesture, useSimultaneousGestures } from 'react-native-gesture-handler';
 import type { AttachmentPoint, Vector2 } from '@elemental/asset-schema';
 import { sharedImageRegistry, useImageRegistry } from '@elemental/animation-runtime';
-import { addAttachment, duplicateAttachment, removeAttachment, setAssetPivot, updateAttachment } from '@/engine/commands';
+import { addAttachment, duplicateAttachment, removeAttachment, setAssetOrbitHandle, setAssetPivot, updateAttachment } from '@/engine/commands';
 import { useEditorStore } from '@/state/editorStore';
 import { useProjectStore } from '@/state/projectStore';
 import { colors, font, spacing } from '@/theme/tokens';
@@ -12,7 +12,7 @@ import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Checkbox, NumberField, Row, SectionTitle, TextField } from '../ui/Fields';
 
-type DragTarget = { kind: 'pivot' } | { kind: 'attachment'; id: string } | { kind: 'attachmentRot'; id: string } | null;
+type DragTarget = { kind: 'pivot' } | { kind: 'orbit' } | { kind: 'attachment'; id: string } | { kind: 'attachmentRot'; id: string } | null;
 
 const PIVOT_PRESETS: { label: string; fx: number; fy: number }[] = [
   { label: '↖', fx: 0, fy: 0 },
@@ -92,6 +92,10 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
       if (Math.hypot(rotHandle.x - sx, rotHandle.y - sy) < 7 && att.id === selectedAtt) return { kind: 'attachmentRot', id: att.id };
       if (Math.hypot(s.x - sx, s.y - sy) < r) return { kind: 'attachment', id: att.id };
     }
+    if (asset.orbitHandle) {
+      const o = toScreen(asset.orbitHandle);
+      if (Math.hypot(o.x - sx, o.y - sy) < r) return { kind: 'orbit' };
+    }
     const p = toScreen(asset.pivot);
     if (Math.hypot(p.x - sx, p.y - sy) < r) return { kind: 'pivot' };
     return null;
@@ -104,9 +108,15 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
     onBegin: (e) => {
       const target = hitTest(e.x, e.y);
       if (target?.kind === 'attachment' || target?.kind === 'attachmentRot') setSelectedAtt(target.id);
-      const attStart = target && target.kind !== 'pivot' ? asset.attachments.find((a) => a.id === target.id) : undefined;
+      const attStart =
+        target && (target.kind === 'attachment' || target.kind === 'attachmentRot')
+          ? asset.attachments.find((a) => a.id === target.id)
+          : undefined;
       dragRef.current = { target, mode: target ? 'edit' : 'pan', startPan: { x: view.panX, y: view.panY }, attStart: attStart ? { ...attStart, position: { ...attStart.position } } : undefined };
-      if (target) useProjectStore.getState().beginTransaction(target.kind === 'pivot' ? 'Set pivot' : 'Edit attachment');
+      if (target)
+        useProjectStore.getState().beginTransaction(
+          target.kind === 'pivot' ? 'Set pivot' : target.kind === 'orbit' ? 'Move 3D handle' : 'Edit attachment',
+        );
     },
     onUpdate: (e) => {
       const d = dragRef.current;
@@ -117,6 +127,7 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
       }
       const p = snap(toImage(e.x, e.y));
       if (d.target?.kind === 'pivot') setAssetPivot(asset.id, p, true);
+      else if (d.target?.kind === 'orbit') setAssetOrbitHandle(asset.id, p, true);
       else if (d.target?.kind === 'attachment') updateAttachment(asset.id, d.target.id, { position: p }, true);
       else if (d.target?.kind === 'attachmentRot' && d.attStart) {
         const c = d.attStart.position;
@@ -137,10 +148,8 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
     onDeactivate: (e) => {
       if (e.canceled) return;
       if (hitTest(e.x, e.y)) return;
-      const p = snap(toImage(e.x, e.y));
-      let n = asset.attachments.length + 1;
-      while (asset.attachments.some((a) => a.name === `attach_${n}`)) n++;
-      setSelectedAtt(addAttachment(asset.id, `attach_${n}`, p));
+      // Double-tap places the rotation centre (shoulder, hinge, etc.) — not an attachment.
+      setAssetPivot(asset.id, snap(toImage(e.x, e.y)));
     },
   });
   const gesture = useSimultaneousGestures(pan, doubleTap);
@@ -189,6 +198,7 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
 
   const att = asset.attachments.find((a) => a.id === selectedAtt);
   const pivotS = toScreen(asset.pivot);
+  const orbitS = asset.orbitHandle ? toScreen(asset.orbitHandle) : null;
   const setPivotPreset = (fx: number, fy: number) => setAssetPivot(asset.id, { x: Math.round(asset.width * fx * 2) / 2, y: Math.round(asset.height * fy * 2) / 2 });
 
   return (
@@ -220,6 +230,14 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
                 <Line p1={{ x: pivotS.x, y: pivotS.y - 12 }} p2={{ x: pivotS.x, y: pivotS.y + 12 }} color={colors.pivot} strokeWidth={1.5} />
                 <Circle cx={pivotS.x} cy={pivotS.y} r={6} color={colors.pivot} style="stroke" strokeWidth={2} />
               </Group>
+              {orbitS ? (
+                <Group>
+                  <Circle cx={orbitS.x} cy={orbitS.y} r={7} color={colors.orbitHandle} style="stroke" strokeWidth={2} />
+                  <Circle cx={orbitS.x} cy={orbitS.y} r={2} color={colors.orbitHandle} />
+                  <Line p1={{ x: orbitS.x - 11, y: orbitS.y }} p2={{ x: orbitS.x + 11, y: orbitS.y }} color={colors.orbitHandle} strokeWidth={1} />
+                  <Line p1={{ x: orbitS.x, y: orbitS.y - 11 }} p2={{ x: orbitS.x, y: orbitS.y + 11 }} color={colors.orbitHandle} strokeWidth={1} />
+                </Group>
+              ) : null}
             </Canvas>
             {asset.attachments.map((a) => {
               const s = toScreen(a.position);
@@ -232,18 +250,26 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
             <Text style={[styles.label, { left: pivotS.x + 9, top: pivotS.y + 6, color: colors.pivot }]} pointerEvents="none">
               pivot
             </Text>
+            {orbitS ? (
+              <Text style={[styles.label, { left: orbitS.x + 9, top: orbitS.y + 6, color: colors.orbitHandle }]} pointerEvents="none">
+                3D
+              </Text>
+            ) : null}
           </View>
         </GestureDetector>
         <View style={styles.canvasHud} pointerEvents="box-none">
           <Text style={styles.hud}>
-            {asset.width}×{asset.height} · {Math.round(view.zoom * 100)}% · drag empty area to pan · wheel to zoom · double-tap to add attachment
+            {asset.width}×{asset.height} · {Math.round(view.zoom * 100)}% · drag empty to pan · wheel zoom · double-tap to set pivot
           </Text>
           <Button label="Fit" small onPress={() => fitView(canvasSize.width, canvasSize.height)} style={styles.fitBtn} />
         </View>
       </View>
 
       <ScrollView style={[styles.side, { width: sideW }]} contentContainerStyle={styles.sideContent}>
-        <SectionTitle>Pivot (rotation centre)</SectionTitle>
+        <SectionTitle>Pivot — pink crosshair (rotation centre)</SectionTitle>
+        <Text style={styles.hint}>
+          Put this on the shoulder / hinge. Drag the pink crosshair, double-tap the image, or use a preset. New sprites start at the image centre only until you move it.
+        </Text>
         <Row>
           <NumberField label="X" value={asset.pivot.x} onChange={(x) => setAssetPivot(asset.id, { ...asset.pivot, x })} width={90} step={0.5} />
           <NumberField label="Y" value={asset.pivot.y} onChange={(y) => setAssetPivot(asset.id, { ...asset.pivot, y })} width={90} step={0.5} />
@@ -258,7 +284,40 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
           <Checkbox label="Pixel grid" value={showGrid} onChange={setShowGrid} />
         </Row>
 
-        <SectionTitle>Attachment points ({asset.attachments.length})</SectionTitle>
+        <SectionTitle>3D orbit handle</SectionTitle>
+        <Checkbox
+          label="Enable 3D handle"
+          value={!!asset.orbitHandle}
+          onChange={(on) => {
+            if (on) setAssetOrbitHandle(asset.id, { x: Math.round(asset.width / 2), y: Math.round(asset.height / 2) });
+            else setAssetOrbitHandle(asset.id, null);
+          }}
+        />
+        {asset.orbitHandle ? (
+          <Row>
+            <NumberField
+              label="X"
+              value={asset.orbitHandle.x}
+              step={0.5}
+              onChange={(x) => setAssetOrbitHandle(asset.id, { ...asset.orbitHandle!, x })}
+              width={90}
+            />
+            <NumberField
+              label="Y"
+              value={asset.orbitHandle.y}
+              step={0.5}
+              onChange={(y) => setAssetOrbitHandle(asset.id, { ...asset.orbitHandle!, y })}
+              width={90}
+            />
+          </Row>
+        ) : (
+          <Text style={styles.hint}>Off by default. When enabled, Animate shows a free-drag node (drag = Z/X, Shift+drag = Y).</Text>
+        )}
+
+        <SectionTitle>Attachments — green (parent sockets)</SectionTitle>
+        <Text style={styles.hint}>
+          On the parent (e.g. torso): green = where a child hangs (shoulder socket). On the child (e.g. arm): put the pink pivot on the shoulder — use Add only for sockets, not for the spin point.
+        </Text>
         <Row>
           <Button
             icon="+"
@@ -285,7 +344,7 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
           />
         </Row>
         <View style={styles.list}>
-          {asset.attachments.length === 0 ? <Text style={styles.hint}>No attachments. Double-tap the image or press Add.</Text> : null}
+          {asset.attachments.length === 0 ? <Text style={styles.hint}>No attachments. Press Add to place a socket on a parent sprite.</Text> : null}
           {asset.attachments.map((a) => (
             <Pressable key={a.id} onPress={() => setSelectedAtt(a.id)} style={[styles.listRow, a.id === selectedAtt && styles.listRowSel]}>
               <View style={styles.dot} />
@@ -310,10 +369,19 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
               <NumberField label="Rot" value={att.rotation} suffix="°" onChange={(rotation) => updateAttachment(asset.id, att.id, { rotation })} width={90} />
               <TextField label="Type" value={att.type ?? ''} placeholder="e.g. shoulder" onChange={(type) => updateAttachment(asset.id, att.id, { type: type || undefined })} />
             </Row>
+            <Button
+              label="Move pivot here"
+              small
+              primary
+              onPress={() => setAssetPivot(asset.id, { ...att.position })}
+              title="Copy this green point onto the pink pivot (use if you placed the shoulder as green by mistake)"
+            />
             <TextField label="Tags" value={(att.tags ?? []).join(', ')} placeholder="comma separated" onChange={(v) => updateAttachment(asset.id, att.id, { tags: v.split(',').map((s) => s.trim()).filter(Boolean) })} />
           </>
         ) : null}
-        <Text style={styles.hint}>Pivot and attachment coordinates are in image pixels (origin top-left). The pivot is the point that stays fixed when the sprite rotates and the point that snaps onto a parent attachment.</Text>
+        <Text style={styles.hint}>
+          Arm: pink pivot at shoulder. Body: green attachment at shoulder socket, then link child pivot → parent attachment.
+        </Text>
       </ScrollView>
     </View>
   );

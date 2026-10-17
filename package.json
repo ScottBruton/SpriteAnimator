@@ -56,7 +56,7 @@
     "web": "expo start --web",
     "ios": "expo start --ios",
     "android": "expo start --android",
-    "postinstall": "node scripts/copy-canvaskit.js",
+    "postinstall": "node scripts/copy-canvaskit.js && node scripts/patch-rngh-pointer-capture.js",
     "typecheck": "tsc --noEmit",
     "lint": "expo lint",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",

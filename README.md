@@ -17,6 +17,7 @@ Phase 1–4 of the master specification are implemented and verified end-to-end 
 | `packages/animation-runtime` – assembly loader, animation clock, Skia renderer, `ElementalUnit` component, `UnitInstance` for game loops | done |
 | Editor shell – menu bar, toolbar, explorer, Skia canvas, inspector, layers, asset library, timeline, status bar, dialogs, compact (<900 px) layout | done |
 | PNG import (web file input / native DocumentPicker), project + global asset libraries, drag-to-place | done |
+| Sprite-sheet extract (grid + corner-sampled chroma + trim + insets) | done |
 | Sprite editor – pivot presets/drag, attachment CRUD with rotation handle, pixel grid | done |
 | Snap-linking by dragging a pivot/attachment onto another sprite's attachment, rotate/scale about pivot, unlink preserving world pose | done |
 | Actions, keyframes (insert/move/delete, interpolation per key), auto-key, playback | done |
@@ -32,7 +33,7 @@ standalone runtime screen → identical animation.
 ### Not yet implemented (honest list)
 
 - Audio tracks / audio event playback (`expo-audio` is installed but not wired).
-- Sprite-sheet extraction (import of packed sheets into individual assets).
+- Auto-detect / flood-fill sheet extraction (grid extract with chroma is implemented).
 - Animation channel layering UI (masks / priority / blend). The schema and evaluator support
   multiple channels, the editor only authors the base channel.
 - Direction-override authoring UI. Direction resolution/mirroring exists in core and the runtime;

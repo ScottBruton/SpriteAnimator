@@ -17,6 +17,8 @@ export const ProjectSettingsSchema = z.object({
   showRulers: z.boolean().default(true),
   showGrid: z.boolean().default(true),
   defaultFps: z.number().positive().default(30),
+  /** Empty or known asset library folders (paths like `arms` or `angles/front`). */
+  assetFolders: z.array(z.string()).default([]),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;
 
@@ -45,6 +47,7 @@ export const ProjectSchema = z.object({
     showRulers: true,
     showGrid: true,
     defaultFps: 30,
+    assetFolders: [],
   }),
 });
 export type Project = z.infer<typeof ProjectSchema>;
@@ -80,6 +83,8 @@ export const RigTemplateSlotSchema = z.object({
     .object({
       position: z.object({ x: z.number(), y: z.number() }),
       rotation: z.number(),
+      rotationX: z.number().default(0),
+      rotationY: z.number().default(0),
       scale: z.object({ x: z.number(), y: z.number() }),
       flipX: z.boolean().default(false),
       flipY: z.boolean().default(false),

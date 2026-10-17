@@ -28,7 +28,11 @@ export function Panel({ title, children, actions, collapsible = true, defaultCol
         <View style={styles.actions}>{actions}</View>
       </View>
       {collapsed ? null : scroll ? (
-        <ScrollView style={styles.body} contentContainerStyle={padded ? styles.bodyPadding : undefined}>
+        <ScrollView
+          style={styles.body}
+          contentContainerStyle={[padded ? styles.bodyPadding : undefined, styles.scrollContent]}
+          nestedScrollEnabled
+        >
           {children}
         </ScrollView>
       ) : (
@@ -55,5 +59,7 @@ const styles = StyleSheet.create({
   title: { color: colors.textMuted, fontSize: font.xs, letterSpacing: 1, textTransform: 'uppercase', fontWeight: '600' },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   body: { flex: 1, minHeight: 0 },
+  /** Allow content to grow taller than the panel so the ScrollView can scroll. */
+  scrollContent: { flexGrow: 1 },
   bodyPadding: { padding: spacing.md, gap: spacing.sm },
 });

@@ -1,4 +1,4 @@
-import type { SpriteAsset, SpriteInstance, Transform2D, Vector2 } from '@elemental/asset-schema';
+import type { AttachmentPoint, SpriteAsset, SpriteInstance, Transform2D, Vector2 } from '@elemental/asset-schema';
 import { IDENTITY, multiply, transformPoint, type Mat2D } from '../math/mat2d';
 import { topologicalOrder } from '../rigging/hierarchy';
 import { attachmentFrameMatrix, drawMatrixFromNode, localNodeMatrix } from './localMatrix';
@@ -33,8 +33,8 @@ export interface WorldTransforms {
  *   parentFrame(i) = IDENTITY                                               if no parent
  *                  = node(p) · T(att.position − pivot(p)) · R(att.rotation)  if parentAttachmentId
  *                  = node(p)                                                otherwise
- *   node(i)        = parentFrame(i) · T(pos) · R(rot) · S(scale ⊙ flip)
- *   draw(i)        = node(i) · T(−pivot(i))
+ *   node(i)        = parentFrame(i) · T(pos) · R(rot Z) · S(scale ⊙ flip)
+ *   draw(i)        = node(i) · P(rotX, rotY) · T(−pivot(i))
  */
 export function computeWorldTransforms(
   resolved: ReadonlyMap<string, ResolvedInstance>,
@@ -59,15 +59,24 @@ export function computeWorldTransforms(
       }
     }
     const node = multiply(parentFrame, localNodeMatrix(r.transform));
-    const draw = drawMatrixFromNode(node, r.pivot);
+    const draw = drawMatrixFromNode(node, r.pivot, r.transform);
     out.set(inst.id, { node, draw, parentFrame });
   }
   return out;
 }
 
-/** World-space position of an attachment point on an instance. */
+/** World-space position of an attachment point on an instance (draw space — markers / labels). */
 export function attachmentWorldPosition(world: WorldTransforms, attachmentPosition: Vector2): Vector2 {
   return transformPoint(world.draw, attachmentPosition);
+}
+
+/**
+ * World-space origin of an attachment's parent frame (matches hierarchy parenting).
+ * Prefer this for joint lines and snap targets so the link visual matches where the child hangs.
+ */
+export function attachmentFrameWorldPosition(world: WorldTransforms, attachment: AttachmentPoint, pivot: Vector2): Vector2 {
+  const m = multiply(world.node, attachmentFrameMatrix(attachment, pivot));
+  return { x: m[4], y: m[5] };
 }
 
 /** World-space pivot position (the node origin). */
@@ -83,4 +92,9 @@ export function imageWorldCorners(world: WorldTransforms, width: number, height:
     transformPoint(world.draw, { x: width, y: height }),
     transformPoint(world.draw, { x: 0, y: height }),
   ];
+}
+
+/** Centre of the image rectangle in world space. */
+export function imageWorldCenter(world: WorldTransforms, width: number, height: number): Vector2 {
+  return transformPoint(world.draw, { x: width / 2, y: height / 2 });
 }

@@ -57,6 +57,7 @@ export function createProject(name: string): Project {
       showRulers: true,
       showGrid: true,
       defaultFps: 30,
+      assetFolders: [],
     },
   };
 }

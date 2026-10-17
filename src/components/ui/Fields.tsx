@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions, type StyleProp, type ViewStyle } from 'react-native';
 import { colors, font, spacing } from '@/theme/tokens';
 
 export interface NumberFieldProps {
@@ -161,6 +161,103 @@ export function Select<T extends string>({ label, value, options, onChange, comp
   );
 }
 
+export interface DropdownOption<T extends string> {
+  value: T;
+  label: string;
+  /** Visual indent level for nested folders (0 = root). */
+  depth?: number;
+}
+
+/**
+ * True dropdown (Modal list). Shows a ✓ beside the current value.
+ * Prefer this over `Select` with `compact` when the user must pick from a list.
+ *
+ * `placement`: `up` opens above the trigger, `down` below, `auto` picks based on space
+ * (defaults to `up` so bottom-of-panel Folder pickers stay on screen).
+ */
+export function DropdownSelect<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  placeholder = 'Choose…',
+  minWidth = 160,
+  placement = 'up',
+}: {
+  label?: string;
+  value: T;
+  options: DropdownOption<T>[];
+  onChange: (v: T) => void;
+  placeholder?: string;
+  minWidth?: number;
+  placement?: 'up' | 'down' | 'auto';
+}) {
+  const win = useWindowDimensions();
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState({ x: 0, y: 0, w: minWidth, h: 0, openUp: true });
+  const triggerRef = React.useRef<React.ComponentRef<typeof View>>(null);
+  const current = options.find((o) => o.value === value);
+  const menuH = Math.min(240, Math.max(48, options.length * 24 + 8));
+
+  const openMenu = () => {
+    triggerRef.current?.measureInWindow((x, y, w, h) => {
+      const spaceBelow = win.height - (y + h);
+      const spaceAbove = y;
+      const openUp =
+        placement === 'up' ? true : placement === 'down' ? false : spaceBelow < menuH && spaceAbove > spaceBelow;
+      setAnchor({ x, y, w: Math.max(minWidth, w), h, openUp });
+      setOpen(true);
+    });
+  };
+
+  const menuPos = anchor.openUp
+    ? { left: anchor.x, bottom: win.height - anchor.y, top: undefined as number | undefined }
+    : { left: anchor.x, top: anchor.y + anchor.h, bottom: undefined as number | undefined };
+
+  return (
+    <View style={styles.fieldRow}>
+      {label ? <Text style={styles.label}>{label}</Text> : null}
+      <Pressable ref={triggerRef} onPress={openMenu} style={[styles.dropdownTrigger, { minWidth }]}>
+        <Text style={styles.dropdownTriggerText} numberOfLines={1}>
+          {current?.label || placeholder}
+        </Text>
+        <Text style={styles.dropdownCaret}>{anchor.openUp && open ? '▴' : '▾'}</Text>
+      </Pressable>
+      <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
+        <View style={[styles.dropdownMenu, { minWidth: anchor.w, maxHeight: menuH }, menuPos]}>
+          <ScrollView style={styles.dropdownScroll} keyboardShouldPersistTaps="handled">
+            {options.map((o) => {
+              const checked = o.value === value;
+              const pad = 8 + (o.depth ?? 0) * 12;
+              return (
+                <Pressable
+                  key={o.value === '' ? '__unfiled__' : o.value}
+                  onPress={() => {
+                    setOpen(false);
+                    onChange(o.value);
+                  }}
+                  style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [
+                    styles.dropdownItem,
+                    { paddingLeft: pad },
+                    hovered && styles.dropdownItemHover,
+                    checked && styles.dropdownItemOn,
+                  ]}
+                >
+                  <Text style={styles.dropdownCheck}>{checked ? '✓' : ' '}</Text>
+                  <Text style={styles.dropdownItemText} numberOfLines={1}>
+                    {o.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
 export function Row({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
   return <View style={[styles.row, style]}>{children}</View>;
 }
@@ -215,4 +312,39 @@ const styles = StyleSheet.create({
   segmentTextOn: { color: colors.text, fontSize: font.sm },
   cycle: { paddingHorizontal: 8, height: 22, justifyContent: 'center', backgroundColor: colors.bg0, borderWidth: 1, borderColor: colors.border, borderRadius: 3 },
   disabled: { opacity: 0.4 },
+  dropdownTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.bg0,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 3,
+    paddingHorizontal: 8,
+    height: 22,
+    flex: 1,
+    maxWidth: 280,
+  },
+  dropdownTriggerText: { color: colors.text, fontSize: font.sm, flex: 1 },
+  dropdownCaret: { color: colors.textDim, fontSize: font.sm },
+  dropdownMenu: {
+    position: 'absolute',
+    maxHeight: 240,
+    backgroundColor: colors.bg2,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 3,
+    paddingVertical: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.45,
+    shadowRadius: 8,
+    elevation: 8,
+    zIndex: 1000,
+  },
+  dropdownScroll: { maxHeight: 232 },
+  dropdownItem: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 10, height: 24 },
+  dropdownItemHover: { backgroundColor: colors.accentSoft },
+  dropdownItemOn: { backgroundColor: colors.accentSoft },
+  dropdownCheck: { color: colors.accent, fontSize: font.sm, width: 12, fontFamily: font.mono },
+  dropdownItemText: { color: colors.text, fontSize: font.sm, flex: 1 },
 });

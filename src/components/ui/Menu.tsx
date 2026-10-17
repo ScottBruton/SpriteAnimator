@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { colors, font, spacing } from '@/theme/tokens';
 
 export interface MenuItem {
@@ -14,6 +14,34 @@ export interface MenuItem {
 export interface MenuProps {
   label: string;
   items: MenuItem[];
+}
+
+function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () => void }) {
+  return (
+    <>
+      {items.map((item, i) =>
+        item.separator ? (
+          <View key={i} style={styles.separator} />
+        ) : (
+          <Pressable
+            key={i}
+            disabled={item.disabled}
+            onPress={() => {
+              onClose();
+              item.onPress?.();
+            }}
+            style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.item, hovered && !item.disabled && styles.itemHover, item.disabled && styles.itemDisabled]}
+          >
+            <Text style={styles.itemText}>
+              {item.checked ? '✓ ' : '   '}
+              {item.label}
+            </Text>
+            {item.shortcut ? <Text style={styles.shortcut}>{item.shortcut}</Text> : null}
+          </Pressable>
+        ),
+      )}
+    </>
+  );
 }
 
 /**
@@ -40,30 +68,36 @@ export function Menu({ label, items }: MenuProps) {
       <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
         <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
         <View style={[styles.menu, { left: anchor.x, top: anchor.y }]}>
-          {items.map((item, i) =>
-            item.separator ? (
-              <View key={i} style={styles.separator} />
-            ) : (
-              <Pressable
-                key={i}
-                disabled={item.disabled}
-                onPress={() => {
-                  setOpen(false);
-                  item.onPress?.();
-                }}
-                style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.item, hovered && !item.disabled && styles.itemHover, item.disabled && styles.itemDisabled]}
-              >
-                <Text style={styles.itemText}>
-                  {item.checked ? '✓ ' : '   '}
-                  {item.label}
-                </Text>
-                {item.shortcut ? <Text style={styles.shortcut}>{item.shortcut}</Text> : null}
-              </Pressable>
-            ),
-          )}
+          <MenuList items={items} onClose={() => setOpen(false)} />
         </View>
       </Modal>
     </>
+  );
+}
+
+export interface ContextMenuProps {
+  visible: boolean;
+  x: number;
+  y: number;
+  items: MenuItem[];
+  onClose: () => void;
+}
+
+/** Absolute-positioned context menu (right-click / long-press). `x`/`y` are window coordinates. */
+export function ContextMenu({ visible, x, y, items, onClose }: ContextMenuProps) {
+  const { width, height } = useWindowDimensions();
+  const menuW = 240;
+  const menuH = Math.min(items.length * 24 + 16, height - 16);
+  const left = Math.max(8, Math.min(x, width - menuW - 8));
+  const top = Math.max(8, Math.min(y, height - menuH - 8));
+
+  return (
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+      <View style={[styles.menu, { left, top, minWidth: menuW }]}>
+        <MenuList items={items} onClose={onClose} />
+      </View>
+    </Modal>
   );
 }
 

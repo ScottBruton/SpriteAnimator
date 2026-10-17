@@ -189,7 +189,7 @@ function ActionsSection() {
 }
 
 const styles = StyleSheet.create({
-  column: { flex: 1 },
+  column: { flex: 1, minHeight: 0, overflow: 'hidden' },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   meta: { color: colors.textDim, fontSize: font.xs },
   empty: { color: colors.textDim, fontSize: font.sm, padding: spacing.md },

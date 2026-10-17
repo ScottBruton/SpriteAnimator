@@ -1,6 +1,7 @@
 export * from './math/vec2';
 export * from './math/angles';
 export * from './math/mat2d';
+export * from './math/project3d';
 export * from './transforms/localMatrix';
 export * from './transforms/worldMatrices';
 export * from './rigging/hierarchy';

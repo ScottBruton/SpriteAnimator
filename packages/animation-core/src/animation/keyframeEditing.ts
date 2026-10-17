@@ -4,6 +4,8 @@ import { upsertKeyframe } from './sampleTrack';
 export type KeyableValue = {
   position: Transform2D['position'];
   rotation: number;
+  rotationX: number;
+  rotationY: number;
   scale: Transform2D['scale'];
   opacity: number;
   visible: boolean;

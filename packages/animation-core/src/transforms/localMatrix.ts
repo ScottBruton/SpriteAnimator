@@ -1,11 +1,14 @@
 import type { AttachmentPoint, Transform2D, Vector2 } from '@elemental/asset-schema';
 import { getRotationDeg, getScale, getTranslation, multiply, rotationDeg, translation, trs, type Mat2D } from '../math/mat2d';
+import { eulerXYAffine } from '../math/project3d';
 
 /**
  * Node matrix of a sprite instance in its parent frame.
  * Maps the instance's pivot-centred frame (pivot at origin) into the parent frame.
  *
- *   M_node = T(position) · R(rotation) · S(scale ⊙ flip)
+ *   M_node = T(position) · R(rotation Z) · S(scale ⊙ flip)
+ *
+ * X/Y tilt is not included here so children keep a 2D parent frame.
  */
 export function localNodeMatrix(t: Transform2D): Mat2D {
   const sx = t.scale.x * (t.flipX ? -1 : 1);
@@ -15,12 +18,13 @@ export function localNodeMatrix(t: Transform2D): Mat2D {
 
 /**
  * Matrix that maps image-local pixel coordinates (origin top-left) into the frame `nodeMatrix`
- * lives in: the pivot is moved to the node origin first.
+ * lives in: the pivot is moved to the node origin first, then optional X/Y foreshortening.
  *
- *   M_draw = M_node · T(-pivot)
+ *   M_draw = M_node · P(rotationX, rotationY) · T(-pivot)
  */
-export function drawMatrixFromNode(nodeMatrix: Mat2D, pivot: Vector2): Mat2D {
-  return multiply(nodeMatrix, translation(-pivot.x, -pivot.y));
+export function drawMatrixFromNode(nodeMatrix: Mat2D, pivot: Vector2, t?: Pick<Transform2D, 'rotationX' | 'rotationY'>): Mat2D {
+  const P = eulerXYAffine(t?.rotationX ?? 0, t?.rotationY ?? 0);
+  return multiply(nodeMatrix, multiply(P, translation(-pivot.x, -pivot.y)));
 }
 
 /**
@@ -54,7 +58,15 @@ export function decomposeNodeMatrix(m: Mat2D, prev?: Transform2D): Transform2D {
       flipX = true;
       flipY = false;
       sy = -sy;
-      return { position, rotation: rotation + 180, scale: { x: sx, y: sy }, flipX, flipY };
+      return {
+        position,
+        rotation: rotation + 180,
+        rotationX: prev?.rotationX ?? 0,
+        rotationY: prev?.rotationY ?? 0,
+        scale: { x: sx, y: sy },
+        flipX,
+        flipY,
+      };
     }
     flipY = true;
     sy = -sy;
@@ -63,5 +75,13 @@ export function decomposeNodeMatrix(m: Mat2D, prev?: Transform2D): Transform2D {
     flipY = false;
   }
   sx = Math.abs(sx);
-  return { position, rotation, scale: { x: sx, y: sy }, flipX, flipY };
+  return {
+    position,
+    rotation,
+    rotationX: prev?.rotationX ?? 0,
+    rotationY: prev?.rotationY ?? 0,
+    scale: { x: sx, y: sy },
+    flipX,
+    flipY,
+  };
 }

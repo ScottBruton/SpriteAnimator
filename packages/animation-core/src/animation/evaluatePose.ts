@@ -98,6 +98,18 @@ function applyTrackValue(
         mode === 'additive' ? target.transform.rotation + v * weight : lerp(target.transform.rotation, v, weight);
       break;
     }
+    case 'rotationX': {
+      const v = value as number;
+      target.transform.rotationX =
+        mode === 'additive' ? target.transform.rotationX + v * weight : lerp(target.transform.rotationX, v, weight);
+      break;
+    }
+    case 'rotationY': {
+      const v = value as number;
+      target.transform.rotationY =
+        mode === 'additive' ? target.transform.rotationY + v * weight : lerp(target.transform.rotationY, v, weight);
+      break;
+    }
     case 'scale': {
       const v = value as Vector2;
       target.transform.scale =

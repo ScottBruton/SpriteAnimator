@@ -40,6 +40,11 @@ export const SpriteAssetSchema = z.object({
   /** Primary pivot in image-local pixels. May lie outside the image bounds. */
   pivot: Vector2Schema,
   attachments: z.array(AttachmentPointSchema).default([]),
+  /**
+   * Optional 3D orbit handle in image-local pixels. When set, Animate mode shows a free-drag
+   * manipulator at this point (drag → Z / X; Shift+drag → Y). Omit / clear to disable.
+   */
+  orbitHandle: Vector2Schema.optional(),
   direction: DirectionSchema.optional(),
   tags: z.array(z.string()).default([]),
   folder: z.string().default(''),

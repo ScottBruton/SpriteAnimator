@@ -33,7 +33,17 @@ export type Vector2Keyframe = z.infer<typeof Vector2KeyframeSchema>;
 export type BooleanKeyframe = z.infer<typeof BooleanKeyframeSchema>;
 export type Keyframe<T> = { time: number; value: T; interpolation: Interpolation; bezier?: BezierHandles };
 
-export const TRACK_PROPERTIES = ['position', 'rotation', 'scale', 'opacity', 'visible', 'ikTarget', 'ikInfluence'] as const;
+export const TRACK_PROPERTIES = [
+  'position',
+  'rotation',
+  'rotationX',
+  'rotationY',
+  'scale',
+  'opacity',
+  'visible',
+  'ikTarget',
+  'ikInfluence',
+] as const;
 export type TrackProperty = (typeof TRACK_PROPERTIES)[number];
 
 /**
@@ -43,6 +53,8 @@ export type TrackProperty = (typeof TRACK_PROPERTIES)[number];
 export const AnimationTrackSchema = z.discriminatedUnion('property', [
   z.object({ targetId: IdSchema, property: z.literal('position'), keyframes: z.array(Vector2KeyframeSchema) }),
   z.object({ targetId: IdSchema, property: z.literal('rotation'), keyframes: z.array(NumberKeyframeSchema) }),
+  z.object({ targetId: IdSchema, property: z.literal('rotationX'), keyframes: z.array(NumberKeyframeSchema) }),
+  z.object({ targetId: IdSchema, property: z.literal('rotationY'), keyframes: z.array(NumberKeyframeSchema) }),
   z.object({ targetId: IdSchema, property: z.literal('scale'), keyframes: z.array(Vector2KeyframeSchema) }),
   z.object({ targetId: IdSchema, property: z.literal('opacity'), keyframes: z.array(NumberKeyframeSchema) }),
   z.object({ targetId: IdSchema, property: z.literal('visible'), keyframes: z.array(BooleanKeyframeSchema) }),

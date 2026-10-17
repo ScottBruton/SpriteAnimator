@@ -240,7 +240,7 @@ const pkg = loadAssemblyPackage(require('./assembly.json'));
 <ElementalUnit assembly={pkg} resolveImage={(a) => assets[a.imagePath]} action="${manifest.defaultActionId ?? ''}" playing />
 \`\`\`
 
-Transform contract: y-down, positive rotation clockwise, \`node = parentFrame · T(position) · R(rotation) · S(scale ⊙ flip)\`, \`draw = node · T(−pivot)\`.
+Transform contract: y-down, positive Z rotation clockwise, \`node = parentFrame · T(position) · R(rotation Z) · S(scale ⊙ flip)\`, \`draw = node · P(rotationX, rotationY) · T(−pivot)\`. X/Y are projected foreshortening about the pivot and do not affect child parent frames.
 Keyframe times are seconds; \`fps\` is only an authoring snap grid.
 ${warnings.length ? `\n## Export warnings\n\n${warnings.map((w) => `- ${w}`).join('\n')}\n` : ''}`;
 }

@@ -1,10 +1,40 @@
 import React, { useMemo } from 'react';
 import { Circle, Group, Line, Path, Rect, Skia } from '@shopify/react-native-skia';
 import type { Vector2 } from '@elemental/asset-schema';
-import { attachmentWorldPosition, imageWorldCorners, pivotWorldPosition, type EvaluatedPose } from '@elemental/animation-core';
+import {
+  attachmentWorldPosition,
+  imageWorldCenter,
+  imageWorldCorners,
+  pivotWorldPosition,
+  transformPoint,
+  type EvaluatedPose,
+} from '@elemental/animation-core';
+import type { BoxHandleKind } from '@/engine/picking';
 import type { SnapIndicator, ViewState } from '@/state/editorStore';
 import { colors } from '@/theme/tokens';
 import { adaptiveGridStep, worldToScreen } from './viewTransform';
+
+function dashedSegmentPath(a: Vector2, b: Vector2, dash = 5, gap = 4) {
+  const p = Skia.PathBuilder.Make();
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-3) return p.detach();
+  const ux = dx / len;
+  const uy = dy / len;
+  let t = 0;
+  let draw = true;
+  while (t < len) {
+    const seg = Math.min(draw ? dash : gap, len - t);
+    if (draw) {
+      p.moveTo(a.x + ux * t, a.y + uy * t);
+      p.lineTo(a.x + ux * (t + seg), a.y + uy * (t + seg));
+    }
+    t += seg;
+    draw = !draw;
+  }
+  return p.detach();
+}
 
 export function GridLayer({ view, width, height, base }: { view: ViewState; width: number; height: number; base: number }) {
   const { minorPath, majorPath, axisPath } = useMemo(() => {
@@ -84,14 +114,30 @@ export interface OverlayProps {
   snap: SnapIndicator | null;
   marquee: { a: Vector2; b: Vector2 } | null;
   linkDrag: { from: Vector2; to: Vector2 } | null;
+  /** When true, draw Animate-mode corner / edge / orbit rotation handles on the selection. */
+  showBoxHandles?: boolean;
+  hoverHandle?: { instanceId: string; kind: BoxHandleKind } | null;
 }
 
 /** Selection outlines, pivots, attachment markers, joint lines, snap indicator (screen space). */
-export function RigOverlays({ pose, view, selectedIds, hoveredId, showPivots, showAttachments, showJointLines, snap, marquee, linkDrag }: OverlayProps) {
+export function RigOverlays({
+  pose,
+  view,
+  selectedIds,
+  hoveredId,
+  showPivots,
+  showAttachments,
+  showJointLines,
+  snap,
+  marquee,
+  linkDrag,
+  showBoxHandles = false,
+  hoverHandle = null,
+}: OverlayProps) {
   const selected = new Set(selectedIds);
   const items: React.ReactNode[] = [];
 
-  // Joint lines: parent attachment (or pivot) → child pivot.
+  // Tan dotted: image centres. Green dotted: pink pivots (rotation centres) when they differ.
   if (showJointLines) {
     for (const [id, r] of pose.resolved) {
       const inst = r.instance;
@@ -100,11 +146,20 @@ export function RigOverlays({ pose, view, selectedIds, hoveredId, showPivots, sh
       const pr = pose.resolved.get(inst.parentId);
       const pw = pose.world.get(inst.parentId);
       if (!cw || !pr || !pw) continue;
-      const att = inst.parentAttachmentId ? pr.asset.attachments.find((a) => a.id === inst.parentAttachmentId) : undefined;
-      const from = worldToScreen(view, att ? attachmentWorldPosition(pw, att.position) : pivotWorldPosition(pw));
-      const to = worldToScreen(view, pivotWorldPosition(cw));
-      items.push(<Line key={`j-${id}`} p1={from} p2={to} color={colors.link} strokeWidth={1.5} opacity={0.8} />);
-      items.push(<Circle key={`jp-${id}`} cx={from.x} cy={from.y} r={3} color={colors.link} />);
+      const childCenter = worldToScreen(view, imageWorldCenter(cw, r.asset.width, r.asset.height));
+      const parentCenter = worldToScreen(view, imageWorldCenter(pw, pr.asset.width, pr.asset.height));
+      items.push(
+        <Path key={`j-${id}`} path={dashedSegmentPath(parentCenter, childCenter, 5, 4)} color={colors.link} style="stroke" strokeWidth={1.5} opacity={0.85} />,
+      );
+      const childPivot = pivotWorldPosition(cw);
+      const parentPivot = pivotWorldPosition(pw);
+      if (Math.hypot(childPivot.x - parentPivot.x, childPivot.y - parentPivot.y) > 1.5) {
+        const from = worldToScreen(view, parentPivot);
+        const to = worldToScreen(view, childPivot);
+        items.push(
+          <Path key={`pvlink-${id}`} path={dashedSegmentPath(from, to, 4, 4)} color={colors.attachment} style="stroke" strokeWidth={1.25} opacity={0.9} />,
+        );
+      }
     }
   }
 
@@ -129,11 +184,64 @@ export function RigOverlays({ pose, view, selectedIds, hoveredId, showPivots, sh
         items.push(<Circle key={`ad-${id}-${att.id}`} cx={s.x} cy={s.y} r={1.5} color={colors.attachment} />);
       }
     }
-    if (showPivots && (isSel || isHover)) {
+    // Always draw pivots when the toggle is on so the pink rotation centre is never mistaken for a green attachment.
+    if (showPivots) {
       const s = worldToScreen(view, pivotWorldPosition(w));
-      items.push(<Circle key={`p-${id}`} cx={s.x} cy={s.y} r={6} color={colors.pivot} style="stroke" strokeWidth={1.5} />);
-      items.push(<Line key={`ph-${id}`} p1={{ x: s.x - 9, y: s.y }} p2={{ x: s.x + 9, y: s.y }} color={colors.pivot} strokeWidth={1} />);
-      items.push(<Line key={`pv-${id}`} p1={{ x: s.x, y: s.y - 9 }} p2={{ x: s.x, y: s.y + 9 }} color={colors.pivot} strokeWidth={1} />);
+      const emphasis = isSel || isHover;
+      items.push(<Circle key={`p-${id}`} cx={s.x} cy={s.y} r={emphasis ? 7 : 5} color={colors.pivot} style="stroke" strokeWidth={emphasis ? 2 : 1.5} opacity={emphasis ? 1 : 0.75} />);
+      items.push(<Line key={`ph-${id}`} p1={{ x: s.x - 10, y: s.y }} p2={{ x: s.x + 10, y: s.y }} color={colors.pivot} strokeWidth={emphasis ? 1.5 : 1} opacity={emphasis ? 1 : 0.75} />);
+      items.push(<Line key={`pv-${id}`} p1={{ x: s.x, y: s.y - 10 }} p2={{ x: s.x, y: s.y + 10 }} color={colors.pivot} strokeWidth={emphasis ? 1.5 : 1} opacity={emphasis ? 1 : 0.75} />);
+    }
+    // Box rotation handles only when this is the sole selection (matches interaction).
+    if (showBoxHandles && isSel && selectedIds.length === 1) {
+      const cornersWorld = imageWorldCorners(w, r.asset.width, r.asset.height);
+      const tl = worldToScreen(view, cornersWorld[0]);
+      const tr = worldToScreen(view, cornersWorld[1]);
+      const br = worldToScreen(view, cornersWorld[2]);
+      const bl = worldToScreen(view, cornersWorld[3]);
+      const mids = [
+        { kind: 'edge-x' as const, p: { x: (tl.x + tr.x) / 2, y: (tl.y + tr.y) / 2 } },
+        { kind: 'edge-x' as const, p: { x: (bl.x + br.x) / 2, y: (bl.y + br.y) / 2 } },
+        { kind: 'edge-y' as const, p: { x: (tl.x + bl.x) / 2, y: (tl.y + bl.y) / 2 } },
+        { kind: 'edge-y' as const, p: { x: (tr.x + br.x) / 2, y: (tr.y + br.y) / 2 } },
+      ];
+      const corners = [tl, tr, br, bl];
+      for (let ci = 0; ci < corners.length; ci++) {
+        const c = corners[ci]!;
+        const hot = hoverHandle?.instanceId === id && hoverHandle.kind === 'corner-z';
+        // Rotate (Z) cue: filled corner disc + small arc ticks.
+        items.push(<Circle key={`bz-${id}-${ci}`} cx={c.x} cy={c.y} r={hot ? 7 : 5.5} color={colors.selection} style={hot ? 'fill' : 'stroke'} strokeWidth={2} />);
+        const tick = 5;
+        items.push(
+          <Path
+            key={`bza-${id}-${ci}`}
+            path={(() => {
+              const p = Skia.PathBuilder.Make();
+              p.moveTo(c.x + tick, c.y - tick * 0.2);
+              p.lineTo(c.x + tick, c.y - tick);
+              p.lineTo(c.x + tick * 0.2, c.y - tick);
+              return p.detach();
+            })()}
+            color={colors.selection}
+            style="stroke"
+            strokeWidth={1.5}
+          />,
+        );
+      }
+      for (let mi = 0; mi < mids.length; mi++) {
+        const m = mids[mi]!;
+        const hot = hoverHandle?.instanceId === id && hoverHandle.kind === m.kind;
+        const col = m.kind === 'edge-x' ? colors.warning : colors.orbitHandle;
+        items.push(<Rect key={`be-${id}-${mi}`} x={m.p.x - (hot ? 5 : 4)} y={m.p.y - (hot ? 5 : 4)} width={hot ? 10 : 8} height={hot ? 10 : 8} color={col} style={hot ? 'fill' : 'stroke'} strokeWidth={1.5} />);
+      }
+      if (r.asset.orbitHandle) {
+        const ow = worldToScreen(view, transformPoint(w.draw, r.asset.orbitHandle));
+        const hot = hoverHandle?.instanceId === id && hoverHandle.kind === 'orbit';
+        items.push(<Circle key={`orb-${id}`} cx={ow.x} cy={ow.y} r={hot ? 8 : 6} color={colors.orbitHandle} style="stroke" strokeWidth={2} />);
+        items.push(<Circle key={`orbd-${id}`} cx={ow.x} cy={ow.y} r={2} color={colors.orbitHandle} />);
+        items.push(<Line key={`orbx-${id}`} p1={{ x: ow.x - 10, y: ow.y }} p2={{ x: ow.x + 10, y: ow.y }} color={colors.orbitHandle} strokeWidth={1} opacity={0.85} />);
+        items.push(<Line key={`orby-${id}`} p1={{ x: ow.x, y: ow.y - 10 }} p2={{ x: ow.x, y: ow.y + 10 }} color={colors.orbitHandle} strokeWidth={1} opacity={0.85} />);
+      }
     }
   }
 

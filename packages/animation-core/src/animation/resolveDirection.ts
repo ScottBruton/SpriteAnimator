@@ -40,6 +40,8 @@ export function resolveSetupPose(
       transform: {
         position: { ...transform.position },
         rotation: transform.rotation,
+        rotationX: transform.rotationX ?? 0,
+        rotationY: transform.rotationY ?? 0,
         scale: { ...transform.scale },
         flipX: transform.flipX,
         flipY: transform.flipY,

@@ -15,7 +15,8 @@ export interface SnapIndicator {
   worldX: number;
   worldY: number;
   parentInstanceId: string;
-  attachmentId: string;
+  /** Omit when snapping onto the parent's pivot (node origin). */
+  attachmentId?: string;
 }
 
 interface EditorState {

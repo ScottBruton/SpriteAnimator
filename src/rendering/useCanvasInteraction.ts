@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import {
   useHoverGesture,
@@ -23,7 +23,7 @@ import {
   type Mat2D,
 } from '@elemental/animation-core';
 import { keyAllTransform, linkInstance, setAssetPivot, setInstanceTransform, updateAttachment, addAttachment } from '@/engine/commands';
-import { findSnapTarget, pickHandle, pickInstance, snapToGrid } from '@/engine/picking';
+import { findSnapTarget, pickBoxHandle, pickHandle, pickInstance, snapToGrid, type BoxHandleKind } from '@/engine/picking';
 import { useEditorStore } from '@/state/editorStore';
 import { usePoseOverrideStore } from '@/state/poseOverrideStore';
 import { useProjectStore } from '@/state/projectStore';
@@ -39,22 +39,40 @@ type DragMode =
   | { kind: 'scale'; ids: string[]; start: Map<string, { transform: Transform2D; pivotWorld: Vector2 }>; startDist: Map<string, number> }
   | { kind: 'link'; id: string; socketAttachmentId?: string; start: { transform: Transform2D; parentFrame: Mat2D }; socketOffsetWorld: Vector2 }
   | { kind: 'pivot'; id: string; assetId: string; startPivot: Vector2; startWorldPivot: Vector2 }
-  | { kind: 'attachment'; id: string; assetId: string; attachmentId: string; draw: Mat2D };
+  | { kind: 'attachment'; id: string; assetId: string; attachmentId: string; draw: Mat2D }
+  | { kind: 'orbit3d'; id: string; start: Transform2D; startScreen: Vector2 }
+  | { kind: 'tilt-x'; id: string; start: Transform2D; startScreenY: number }
+  | { kind: 'tilt-y'; id: string; start: Transform2D; startScreenX: number }
+  | { kind: 'box-z'; id: string; start: Transform2D; pivotWorld: Vector2; parentFrame: Mat2D; startAngle: number };
 
 export interface InteractionState {
   marquee: { a: Vector2; b: Vector2 } | null;
   linkDrag: { from: Vector2; to: Vector2 } | null;
+  /** Animate-mode box / orbit handle under the cursor (for overlays + cursor). */
+  hoverHandle: { instanceId: string; kind: BoxHandleKind } | null;
 }
 
 const HANDLE_RADIUS_PX = 9;
+/** Degrees of Euler change per screen pixel for orbit / edge tilts. */
+const TILT_DEG_PER_PX = 0.45;
+
+export type CanvasContextMenuRequest = {
+  /** Local coords inside the gesture view (canvas overlay). */
+  localX: number;
+  localY: number;
+  instanceId: string;
+};
 
 /**
  * Canvas gesture controller. Rigging mode edits the setup pose (undoable transactions);
  * Animate mode edits pending pose overrides which are keyed explicitly or by auto-key.
  */
-export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPose | null>) {
+export function useCanvasInteraction(
+  poseRef: React.MutableRefObject<EvaluatedPose | null>,
+  onContextMenu?: (req: CanvasContextMenuRequest) => void,
+) {
   const drag = useRef<DragMode>({ kind: 'none' });
-  const [state, setState] = useState<InteractionState>({ marquee: null, linkDrag: null });
+  const [state, setState] = useState<InteractionState>({ marquee: null, linkDrag: null, hoverHandle: null });
   const lastTap = useRef<{ t: number; id: string | null }>({ t: 0, id: null });
   const pinchStart = useRef<{ zoom: number; panX: number; panY: number; fx: number; fy: number } | null>(null);
   const panPointers = useRef(1);
@@ -68,6 +86,8 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
   const toWorld = useCallback((sx: number, sy: number) => screenToWorld(ed.getState().view, { x: sx, y: sy }), [ed]);
 
   const applyTransform = (id: string, t: Transform2D) => {
+    const asm = proj.getState().project.assemblies.find((a) => a.id === proj.getState().project.activeAssemblyId);
+    if (asm?.sprites.find((s) => s.id === id)?.locked) return;
     if (isAnimate()) usePoseOverrideStore.getState().merge(id, { transform: t });
     else setInstanceTransform(id, t, true);
   };
@@ -75,12 +95,16 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
   const finishTransformEdit = (ids: string[]) => {
     if (isAnimate()) {
       const s = ed.getState();
+      const ov = usePoseOverrideStore.getState();
       if (s.autoKey && s.activeActionId && poseRef.current) {
         for (const id of ids) {
           const r = poseRef.current.resolved.get(id);
           if (r) keyAllTransform(s.activeActionId, id, s.playhead, r.transform, r.opacity, r.visible);
         }
-        usePoseOverrideStore.getState().clear(ids);
+        ov.endTransaction();
+        ov.clear(ids);
+      } else {
+        ov.endTransaction();
       }
     } else {
       proj.getState().endTransaction();
@@ -88,7 +112,8 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
   };
 
   const beginEdit = (label: string) => {
-    if (!isAnimate()) proj.getState().beginTransaction(label);
+    if (isAnimate()) usePoseOverrideStore.getState().beginTransaction(label);
+    else proj.getState().beginTransaction(label);
   };
 
   const lockedIds = () => {
@@ -113,6 +138,48 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
       return;
     }
     if (!pose) return;
+
+    // Bounds / orbit rotation handles — single unlocked selection (Rigging or Animate).
+    if (
+      s.selectedIds.length === 1 &&
+      !lockedIds().has(s.selectedIds[0]!) &&
+      (tool === 'select' || tool === 'move' || tool === 'rotate')
+    ) {
+      const onlyId = s.selectedIds[0]!;
+      const box = pickBoxHandle(pose, onlyId, world, s.view.zoom);
+      if (box) {
+        const r = pose.resolved.get(box.instanceId);
+        const w = pose.world.get(box.instanceId);
+        if (r && w) {
+          const startT = {
+            ...r.transform,
+            position: { ...r.transform.position },
+            scale: { ...r.transform.scale },
+            rotationX: r.transform.rotationX ?? 0,
+            rotationY: r.transform.rotationY ?? 0,
+          };
+          beginEdit('Rotate sprite');
+          if (box.kind === 'orbit') {
+            drag.current = { kind: 'orbit3d', id: box.instanceId, start: startT, startScreen: { x: sx, y: sy } };
+          } else if (box.kind === 'edge-x') {
+            drag.current = { kind: 'tilt-x', id: box.instanceId, start: startT, startScreenY: sy };
+          } else if (box.kind === 'edge-y') {
+            drag.current = { kind: 'tilt-y', id: box.instanceId, start: startT, startScreenX: sx };
+          } else {
+            const pv = pivotWorldPosition(w);
+            drag.current = {
+              kind: 'box-z',
+              id: box.instanceId,
+              start: startT,
+              pivotWorld: pv,
+              parentFrame: w.parentFrame,
+              startAngle: Math.atan2(world.y - pv.y, world.x - pv.x),
+            };
+          }
+          return;
+        }
+      }
+    }
 
     // Handle hits on selected sprites first (pivot / attachment markers).
     const handle = pickHandle(pose, s.selectedIds, world, handleRadius);
@@ -141,7 +208,7 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
           start: { transform: r.transform, parentFrame: w.parentFrame },
           socketOffsetWorld: { x: socketWorld.x - piv.x, y: socketWorld.y - piv.y },
         };
-        setState({ marquee: null, linkDrag: { from: socketWorld, to: socketWorld } });
+        setState((st) => ({ ...st, marquee: null, linkDrag: { from: socketWorld, to: socketWorld } }));
         return;
       }
     }
@@ -163,56 +230,69 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
 
     const hit = pickInstance(pose, world, lockedIds());
     if (hit) {
-      let ids = s.selectedIds;
-      if (!ids.includes(hit.instanceId)) {
-        ids = modifiers.shift ? [...ids, hit.instanceId] : [hit.instanceId];
-        s.select(ids);
-      }
+      // Rotate / scale always affect exactly one sprite. Shift only keeps multi-select for move.
+      // Parenting still swings children when the *parent* is rotated — that is intentional.
       const effectiveTool = tool === 'select' ? 'move' : tool;
+      const isolate = effectiveTool === 'rotate' || effectiveTool === 'scale' || !modifiers.shift;
+      const ids = isolate
+        ? [hit.instanceId]
+        : s.selectedIds.includes(hit.instanceId)
+          ? s.selectedIds
+          : [...s.selectedIds, hit.instanceId];
+      if (ids.length !== s.selectedIds.length || ids.some((id, i) => id !== s.selectedIds[i])) s.select(ids);
+
+      // Locked sprites can be selected via Layers/Inspector unlock, but not moved here.
+      if (lockedIds().has(hit.instanceId)) return;
+
       if (effectiveTool === 'move' || effectiveTool === 'link' || effectiveTool === 'pivot' || effectiveTool === 'attachment') {
         const start = new Map<string, { transform: Transform2D; parentFrame: Mat2D }>();
         for (const id of ids) {
           const r = pose.resolved.get(id);
           const w = pose.world.get(id);
-          if (r && w) start.set(id, { transform: r.transform, parentFrame: w.parentFrame });
+          if (r && w) start.set(id, { transform: { ...r.transform, position: { ...r.transform.position }, scale: { ...r.transform.scale } }, parentFrame: w.parentFrame });
         }
         beginEdit('Move sprite');
         drag.current = { kind: 'move', ids, start, startWorld: world };
       } else if (effectiveTool === 'rotate') {
         const start = new Map<string, { transform: Transform2D; pivotWorld: Vector2; parentFrame: Mat2D }>();
         const startAngle = new Map<string, number>();
-        for (const id of ids) {
-          const r = pose.resolved.get(id);
-          const w = pose.world.get(id);
-          if (r && w) {
-            const pv = pivotWorldPosition(w);
-            start.set(id, { transform: r.transform, pivotWorld: pv, parentFrame: w.parentFrame });
-            startAngle.set(id, Math.atan2(world.y - pv.y, world.x - pv.x));
-          }
+        const id = hit.instanceId;
+        const r = pose.resolved.get(id);
+        const w = pose.world.get(id);
+        if (r && w) {
+          const pv = pivotWorldPosition(w);
+          start.set(id, {
+            transform: { ...r.transform, position: { ...r.transform.position }, scale: { ...r.transform.scale } },
+            pivotWorld: pv,
+            parentFrame: w.parentFrame,
+          });
+          startAngle.set(id, Math.atan2(world.y - pv.y, world.x - pv.x));
+          beginEdit('Rotate sprite');
+          drag.current = { kind: 'rotate', ids: [id], start, startAngle };
         }
-        beginEdit('Rotate sprite');
-        drag.current = { kind: 'rotate', ids, start, startAngle };
       } else if (effectiveTool === 'scale') {
         const start = new Map<string, { transform: Transform2D; pivotWorld: Vector2 }>();
         const startDist = new Map<string, number>();
-        for (const id of ids) {
-          const r = pose.resolved.get(id);
-          const w = pose.world.get(id);
-          if (r && w) {
-            const pv = pivotWorldPosition(w);
-            start.set(id, { transform: r.transform, pivotWorld: pv });
-            startDist.set(id, Math.max(1e-3, Math.hypot(world.x - pv.x, world.y - pv.y)));
-          }
+        const id = hit.instanceId;
+        const r = pose.resolved.get(id);
+        const w = pose.world.get(id);
+        if (r && w) {
+          const pv = pivotWorldPosition(w);
+          start.set(id, {
+            transform: { ...r.transform, position: { ...r.transform.position }, scale: { ...r.transform.scale } },
+            pivotWorld: pv,
+          });
+          startDist.set(id, Math.max(1e-3, Math.hypot(world.x - pv.x, world.y - pv.y)));
+          beginEdit('Scale sprite');
+          drag.current = { kind: 'scale', ids: [id], start, startDist };
         }
-        beginEdit('Scale sprite');
-        drag.current = { kind: 'scale', ids, start, startDist };
       }
       return;
     }
 
     if (tool === 'select') {
+      // Track marquee start, but only paint after the pointer moves (avoids click flash).
       drag.current = { kind: 'marquee', start: world };
-      setState({ marquee: { a: world, b: world }, linkDrag: null });
     } else {
       drag.current = { kind: 'pan', startPanX: s.view.panX, startPanY: s.view.panY };
     }
@@ -229,9 +309,50 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
       case 'pan':
         s.setView({ panX: d.startPanX + tx, panY: d.startPanY + ty });
         return;
-      case 'marquee':
-        setState({ marquee: { a: d.start, b: world }, linkDrag: null });
+      case 'marquee': {
+        const moved = Math.abs(world.x - d.start.x) > 1 || Math.abs(world.y - d.start.y) > 1;
+        if (moved) setState((st) => ({ ...st, marquee: { a: d.start, b: world }, linkDrag: null }));
         return;
+      }
+      case 'orbit3d': {
+        const dx = sx - d.startScreen.x;
+        const dy = sy - d.startScreen.y;
+        if (modifiers.shift) {
+          applyTransform(d.id, { ...d.start, rotationY: d.start.rotationY + dx * TILT_DEG_PER_PX });
+        } else {
+          let rotZ = d.start.rotation + dx * TILT_DEG_PER_PX;
+          let rotX = d.start.rotationX + dy * TILT_DEG_PER_PX;
+          if (modifiers.ctrl) {
+            rotZ = Math.round(rotZ / 15) * 15;
+            rotX = Math.round(rotX / 15) * 15;
+          }
+          applyTransform(d.id, { ...d.start, rotation: rotZ, rotationX: rotX });
+        }
+        return;
+      }
+      case 'tilt-x': {
+        let rotX = d.start.rotationX + (sy - d.startScreenY) * TILT_DEG_PER_PX;
+        if (modifiers.shift) rotX = Math.round(rotX / 15) * 15;
+        applyTransform(d.id, { ...d.start, rotationX: rotX });
+        return;
+      }
+      case 'tilt-y': {
+        let rotY = d.start.rotationY + (sx - d.startScreenX) * TILT_DEG_PER_PX;
+        if (modifiers.shift) rotY = Math.round(rotY / 15) * 15;
+        applyTransform(d.id, { ...d.start, rotationY: rotY });
+        return;
+      }
+      case 'box-z': {
+        const a1 = Math.atan2(world.y - d.pivotWorld.y, world.x - d.pivotWorld.x);
+        let delta = radToDeg(a1 - d.startAngle);
+        const det = d.parentFrame[0] * d.parentFrame[3] - d.parentFrame[1] * d.parentFrame[2];
+        if (det < 0) delta = -delta;
+        if (d.start.flipX !== d.start.flipY) delta = -delta;
+        let rot = d.start.rotation + delta;
+        if (modifiers.shift) rot = Math.round(rot / 15) * 15;
+        applyTransform(d.id, { ...d.start, rotation: rot });
+        return;
+      }
       case 'move': {
         const dw = { x: world.x - d.startWorld.x, y: world.y - d.startWorld.y };
         for (const id of d.ids) {
@@ -282,8 +403,17 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
         const local = transformPointInv(d.start.parentFrame, pivotWorld);
         void inv;
         setInstanceTransform(d.id, { ...d.start.transform, position: local }, true);
-        s.setSnapIndicator(target ? { worldX: target.world.x, worldY: target.world.y, parentInstanceId: target.instanceId, attachmentId: target.attachmentId } : null);
-        setState({ marquee: null, linkDrag: { from: pivotWorld, to: socketWorld } });
+        s.setSnapIndicator(
+          target
+            ? {
+                worldX: target.world.x,
+                worldY: target.world.y,
+                parentInstanceId: target.instanceId,
+                attachmentId: target.attachmentId,
+              }
+            : null,
+        );
+        setState((st) => ({ ...st, marquee: null, linkDrag: { from: pivotWorld, to: socketWorld } }));
         return;
       }
       case 'pivot': {
@@ -319,6 +449,33 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
     }
   };
 
+  /** Abort any in-progress drag (stuck pointer, context menu, blur). Does not commit edits. */
+  const cancelDrag = useCallback(() => {
+    const d = drag.current;
+    if (d.kind === 'none') {
+      setState((st) => (st.marquee || st.linkDrag ? { ...st, marquee: null, linkDrag: null } : st));
+      return;
+    }
+    drag.current = { kind: 'none' };
+    setState((st) => ({ ...st, marquee: null, linkDrag: null }));
+    ed.getState().setSnapIndicator(null);
+    if (
+      d.kind === 'move' ||
+      d.kind === 'rotate' ||
+      d.kind === 'scale' ||
+      d.kind === 'link' ||
+      d.kind === 'pivot' ||
+      d.kind === 'attachment' ||
+      d.kind === 'orbit3d' ||
+      d.kind === 'tilt-x' ||
+      d.kind === 'tilt-y' ||
+      d.kind === 'box-z'
+    ) {
+      if (isAnimate()) usePoseOverrideStore.getState().cancelTransaction();
+      else proj.getState().cancelTransaction();
+    }
+  }, [ed, proj]);
+
   const onDragEnd = () => {
     const d = drag.current;
     const s = ed.getState();
@@ -332,14 +489,17 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
           const x1 = Math.max(m.a.x, m.b.x);
           const y0 = Math.min(m.a.y, m.b.y);
           const y1 = Math.max(m.a.y, m.b.y);
-          const hits: string[] = [];
-          for (const [id, w] of pose.world) {
-            const p = pivotWorldPosition(w);
-            if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) hits.push(id);
+          // Ignore click-jitter marquees (activation threshold can still be tiny).
+          if (x1 - x0 > 2 || y1 - y0 > 2) {
+            const hits: string[] = [];
+            for (const [id, w] of pose.world) {
+              const p = pivotWorldPosition(w);
+              if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) hits.push(id);
+            }
+            s.select(modifiers.shift ? [...new Set([...s.selectedIds, ...hits])] : hits);
           }
-          s.select(modifiers.shift ? [...new Set([...s.selectedIds, ...hits])] : hits);
         }
-        setState({ marquee: null, linkDrag: null });
+        setState((st) => ({ ...st, marquee: null, linkDrag: null }));
         return;
       }
       case 'move':
@@ -347,10 +507,16 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
       case 'scale':
         finishTransformEdit(d.ids);
         return;
+      case 'orbit3d':
+      case 'tilt-x':
+      case 'tilt-y':
+      case 'box-z':
+        finishTransformEdit([d.id]);
+        return;
       case 'link': {
         const snap = s.snapIndicator;
         s.setSnapIndicator(null);
-        setState({ marquee: null, linkDrag: null });
+        setState((st) => ({ ...st, marquee: null, linkDrag: null }));
         if (snap && pose) {
           // The moved pose (captured in the latest evaluation) is only used for the alignment
           // math; revert the transient move so the link is a single undo step.
@@ -364,7 +530,10 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
             mode: 'snap',
             resolved: fresh.resolved,
           });
-          s.setStatus('Linked sprite to attachment', 'success');
+          s.setStatus(
+            snap.attachmentId ? 'Linked to parent attachment' : 'Linked to parent pivot (move pivot or use an attachment for joints)',
+            'success',
+          );
         } else {
           proj.getState().endTransaction();
         }
@@ -379,10 +548,29 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
     }
   };
 
+  // Safety net: if pointer-up is lost (modal / capture), clear a stuck marquee after RNGH has had a chance to end.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const mopUp = () => {
+      requestAnimationFrame(() => {
+        if (drag.current.kind === 'marquee' || drag.current.kind === 'pan') cancelDrag();
+      });
+    };
+    const onBlur = () => cancelDrag();
+    window.addEventListener('pointerup', mopUp, true);
+    window.addEventListener('pointercancel', mopUp, true);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('pointerup', mopUp, true);
+      window.removeEventListener('pointercancel', mopUp, true);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [cancelDrag]);
+
   // ---- Gestures ------------------------------------------------------------------------------
   const pan = usePanGesture({
     runOnJS: true,
-    minDistance: 2,
+    minDistance: 6,
     maxPointers: 1,
     onBegin: (e) => {
       panPointers.current = e.numberOfPointers;
@@ -473,7 +661,10 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
       const pose = poseRef.current;
       if (!pose) return;
       const hit = pickInstance(pose, toWorld(e.x, e.y), lockedIds());
-      if (hit) ed.getState().select([hit.instanceId], { toggle: true });
+      if (!hit) return;
+      const s = ed.getState();
+      if (!s.selectedIds.includes(hit.instanceId)) s.select([hit.instanceId]);
+      onContextMenu?.({ localX: e.x, localY: e.y, instanceId: hit.instanceId });
     },
   });
 
@@ -488,17 +679,28 @@ export function useCanvasInteraction(poseRef: React.MutableRefObject<EvaluatedPo
         const hit = pickInstance(pose, world, lockedIds());
         const id = hit?.instanceId ?? null;
         if (id !== s.hoveredId) s.setHovered(id);
+        let hoverHandle: InteractionState['hoverHandle'] = null;
+        if (s.selectedIds.length === 1 && !lockedIds().has(s.selectedIds[0]!)) {
+          const box = pickBoxHandle(pose, s.selectedIds[0]!, world, s.view.zoom);
+          if (box) hoverHandle = { instanceId: box.instanceId, kind: box.kind };
+        }
+        setState((st) =>
+          st.hoverHandle?.instanceId === hoverHandle?.instanceId && st.hoverHandle?.kind === hoverHandle?.kind
+            ? st
+            : { ...st, hoverHandle },
+        );
       }
     },
     onDeactivate: () => {
       ed.getState().setCursorWorld(null);
       ed.getState().setHovered(null);
+      setState((st) => ({ ...st, hoverHandle: null }));
     },
   });
 
   const gesture = useSimultaneousGestures(pan, twoFingerPan, pinch, tap, longPress, hover);
 
-  return useMemo(() => ({ gesture, state }), [gesture, state]);
+  return useMemo(() => ({ gesture, state, cancelDrag }), [gesture, state, cancelDrag]);
 }
 
 function transformPointInv(m: Mat2D, p: Vector2): Vector2 {

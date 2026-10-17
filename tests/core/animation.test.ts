@@ -208,5 +208,13 @@ describe('two-bone IK', () => {
 });
 
 test('identityTransform helper', () => {
-  expect(identityTransform()).toEqual({ position: { x: 0, y: 0 }, rotation: 0, scale: { x: 1, y: 1 }, flipX: false, flipY: false });
+  expect(identityTransform()).toEqual({
+    position: { x: 0, y: 0 },
+    rotation: 0,
+    rotationX: 0,
+    rotationY: 0,
+    scale: { x: 1, y: 1 },
+    flipX: false,
+    flipY: false,
+  });
 });

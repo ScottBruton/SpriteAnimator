@@ -3,7 +3,7 @@
  * Bump MINOR for backwards-compatible additions, MAJOR for breaking changes.
  * Every bump must ship with a migration in `migrations.ts`.
  */
-export const SCHEMA_VERSION = '1.0.0';
+export const SCHEMA_VERSION = '1.1.0';
 
 export function parseSchemaVersion(v: string): { major: number; minor: number; patch: number } {
   const [maj = '0', min = '0', pat = '0'] = v.split('.');

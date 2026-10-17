@@ -34,6 +34,8 @@ export function snappedLocalTransform(input: {
   const base: Transform2D = {
     position: { x: 0, y: 0 },
     rotation: input.rotation,
+    rotationX: 0,
+    rotationY: 0,
     scale: input.scale,
     flipX: input.flipX,
     flipY: input.flipY,

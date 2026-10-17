@@ -54,6 +54,8 @@ export function sampleTrack(track: AnimationTrack, t: number): TrackValue | unde
     case 'ikTarget':
       return sampleVector2(track.keyframes, t);
     case 'rotation':
+    case 'rotationX':
+    case 'rotationY':
     case 'opacity':
     case 'ikInfluence':
       return sampleNumber(track.keyframes, t);

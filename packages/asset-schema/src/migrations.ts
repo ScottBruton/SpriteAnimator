@@ -10,7 +10,14 @@ type Migration = {
  * Ordered list of document migrations. Each migration upgrades a raw (unvalidated) JSON document
  * from `from` to `to`. Add a new entry whenever `SCHEMA_VERSION` changes.
  */
-const MIGRATIONS: Migration[] = [];
+const MIGRATIONS: Migration[] = [
+  {
+    from: '1.0.0',
+    to: '1.1.0',
+    // Additive: Transform2D.rotationX/Y default 0; SpriteAsset.orbitHandle optional; new track props.
+    migrate: (doc) => doc,
+  },
+];
 
 export class SchemaVersionError extends Error {
   constructor(public readonly documentVersion: string) {

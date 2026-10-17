@@ -11,6 +11,7 @@ import { colors, font, spacing } from '@/theme/tokens';
 import { Button } from '../ui/Button';
 import { ConfirmDialog, Dialog } from '../ui/Dialog';
 import { Checkbox, NumberField, Row, SectionTitle, Select, TextField } from '../ui/Fields';
+import { SpriteSheetDialog } from './SpriteSheetDialog';
 
 export function Dialogs() {
   const dialog = useEditorStore((s) => s.dialog);
@@ -26,6 +27,8 @@ export function Dialogs() {
       return <SettingsDialog onClose={close} />;
     case 'about':
       return <AboutDialog onClose={close} />;
+    case 'importSheet':
+      return <SpriteSheetDialog onClose={close} />;
     default:
       return null;
   }

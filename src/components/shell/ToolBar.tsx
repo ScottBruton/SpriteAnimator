@@ -1,8 +1,10 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { DIRECTIONS } from '@elemental/asset-schema';
+import { patchInstance } from '@/engine/commands';
 import { useEditorStore, type Tool } from '@/state/editorStore';
-import { useProjectStore } from '@/state/projectStore';
+import { usePoseOverrideStore } from '@/state/poseOverrideStore';
+import { useActiveAssembly, useProjectStore } from '@/state/projectStore';
 import { colors, font, sizes, spacing } from '@/theme/tokens';
 import { Button } from '../ui/Button';
 import { Select } from '../ui/Fields';
@@ -21,12 +23,39 @@ export function ToolBar() {
   const tool = useEditorStore((s) => s.tool);
   const setTool = useEditorStore((s) => s.setTool);
   const ed = useEditorStore();
-  const undo = useProjectStore((s) => s.undo);
-  const redo = useProjectStore((s) => s.redo);
-  const canUndo = useProjectStore((s) => s.past.length > 0);
-  const canRedo = useProjectStore((s) => s.future.length > 0);
+  const workspace = useEditorStore((s) => s.workspace);
+  const selectedIds = useEditorStore((s) => s.selectedIds);
+  const assembly = useActiveAssembly();
+  const undoProject = useProjectStore((s) => s.undo);
+  const redoProject = useProjectStore((s) => s.redo);
+  const canUndoProject = useProjectStore((s) => s.past.length > 0);
+  const canRedoProject = useProjectStore((s) => s.future.length > 0);
+  const canUndoPose = usePoseOverrideStore((s) => s.past.length > 0 || !!s.transaction);
+  const canRedoPose = usePoseOverrideStore((s) => s.future.length > 0);
+  const hasOverrides = usePoseOverrideStore((s) => s.overrides.size > 0);
+  const resetToRigged = usePoseOverrideStore((s) => s.resetToRigged);
   const snap = useProjectStore((s) => s.project.settings.snapToGrid);
   const toggleSnap = () => useProjectStore.getState().commit('Snap to grid', (d) => void (d.settings.snapToGrid = !d.settings.snapToGrid));
+
+  const selectedSprites = assembly?.sprites.filter((s) => selectedIds.includes(s.id)) ?? [];
+  const anySelected = selectedSprites.length > 0;
+  const allLocked = anySelected && selectedSprites.every((s) => s.locked);
+
+  const undo = () => {
+    if (workspace === 'animate' && usePoseOverrideStore.getState().undo()) return;
+    undoProject();
+  };
+  const redo = () => {
+    if (workspace === 'animate' && usePoseOverrideStore.getState().redo()) return;
+    redoProject();
+  };
+  const canUndo = workspace === 'animate' ? canUndoPose || canUndoProject : canUndoProject;
+  const canRedo = workspace === 'animate' ? canRedoPose || canRedoProject : canRedoProject;
+
+  const toggleLock = () => {
+    const next = !allLocked;
+    for (const s of selectedSprites) patchInstance(s.id, { locked: next }, next ? 'Lock sprite' : 'Unlock sprite');
+  };
 
   return (
     <View style={styles.bar}>
@@ -34,15 +63,39 @@ export function ToolBar() {
         <Button key={t.id} icon={t.icon} active={tool === t.id} onPress={() => setTool(t.id)} title={`${t.label} (${t.key})`} style={styles.tool} />
       ))}
       <View style={styles.sep} />
-      <Button icon="↶" onPress={undo} disabled={!canUndo} title="Undo" style={styles.tool} />
-      <Button icon="↷" onPress={redo} disabled={!canRedo} title="Redo" style={styles.tool} />
+      <Button icon="↶" onPress={undo} disabled={!canUndo} title="Undo (Ctrl+Z)" style={styles.tool} />
+      <Button icon="↷" onPress={redo} disabled={!canRedo} title="Redo (Ctrl+Y)" style={styles.tool} />
       <View style={styles.sep} />
       <Button icon="▦" active={ed.showGrid} onPress={() => ed.toggle('showGrid')} title="Grid (G)" style={styles.tool} />
       <Button icon="⌗" active={snap} onPress={toggleSnap} title="Snap to grid" style={styles.tool} />
       <Button icon="📏" active={ed.showRulers} onPress={() => ed.toggle('showRulers')} title="Rulers" style={styles.tool} />
       <Button icon="⊕" active={ed.showPivots} onPress={() => ed.toggle('showPivots')} title="Show pivots" style={styles.tool} />
       <Button icon="◎" active={ed.showAttachments} onPress={() => ed.toggle('showAttachments')} title="Show attachment points" style={styles.tool} />
-      <Button icon="⟋" active={ed.showJointLines} onPress={() => ed.toggle('showJointLines')} title="Show joint lines" style={styles.tool} />
+      <Button icon="⟋" active={ed.showJointLines} onPress={() => ed.toggle('showJointLines')} title="Show joint / pivot links" style={styles.tool} />
+      {anySelected ? (
+        <>
+          <View style={styles.sep} />
+          <Button
+            icon={allLocked ? '🔒' : '🔓'}
+            active={allLocked}
+            onPress={toggleLock}
+            title={allLocked ? 'Unlock selection' : 'Lock selection (others pick through it)'}
+            style={styles.tool}
+          />
+        </>
+      ) : null}
+      {workspace === 'animate' ? (
+        <>
+          <View style={styles.sep} />
+          <Button
+            label="Reset to rig"
+            small
+            disabled={!hasOverrides && selectedIds.length === 0}
+            onPress={() => resetToRigged(selectedIds.length ? selectedIds : undefined)}
+            title="Clear animate overrides and restore the rigged setup pose"
+          />
+        </>
+      ) : null}
       <View style={styles.sep} />
       <Text style={styles.label}>Dir</Text>
       <Select value={ed.direction} options={DIRECTIONS.map((d) => ({ value: d, label: d }))} onChange={ed.setDirection} compact />

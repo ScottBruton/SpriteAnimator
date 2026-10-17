@@ -15,10 +15,14 @@ import { createAction, createId, createLayer, createSpriteInstance } from '@elem
 import {
   attachmentWorldFrame,
   computeWorldTransforms,
+  decomposeNodeMatrix,
   insertKeyframe,
+  localNodeMatrix,
+  multiply,
   preserveWorldPose,
   removeKeyframe,
   snappedLocalTransform,
+  translation,
   wouldCreateCycle,
   type KeyableValue,
   type ResolvedInstance,
@@ -51,10 +55,138 @@ export function renameAsset(assetId: string, name: string): void {
   });
 }
 
+/** Normalise a library folder path (`Arms\\Front` → `Arms/Front`). Empty string = unfiled. */
+export function normalizeAssetFolder(raw: string): string {
+  return raw
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+|\/+$/g, '');
+}
+
+function ensureAssetFolders(d: Draft<Project>): string[] {
+  if (!Array.isArray(d.settings.assetFolders)) d.settings.assetFolders = [];
+  return d.settings.assetFolders;
+}
+
+export function createAssetFolder(folder: string): boolean {
+  const f = normalizeAssetFolder(folder);
+  if (!f) return false;
+  store().commit('Create asset folder', (d) => {
+    const list = ensureAssetFolders(d);
+    if (!list.includes(f)) list.push(f);
+  });
+  return true;
+}
+
+export function setAssetFolder(assetId: string, folder: string): void {
+  setAssetsFolder([assetId], folder);
+}
+
+/** Move one or more project assets into a folder (empty string = unfiled). Single undo step. */
+export function setAssetsFolder(assetIds: string[], folder: string): void {
+  const f = normalizeAssetFolder(folder);
+  const ids = [...new Set(assetIds)];
+  if (ids.length === 0) return;
+  store().commit(ids.length > 1 ? 'Move assets to folder' : f ? 'Move asset to folder' : 'Remove asset from folder', (d) => {
+    let moved = false;
+    for (const id of ids) {
+      const a = findAsset(d, id);
+      if (!a) continue;
+      a.folder = f;
+      a.updatedAt = Date.now();
+      moved = true;
+    }
+    if (moved && f) {
+      const list = ensureAssetFolders(d);
+      if (!list.includes(f)) list.push(f);
+    }
+  });
+}
+
+function remapFolderPath(path: string, src: string, dst: string): string {
+  if (path === src) return dst;
+  if (path.startsWith(src + '/')) return dst + path.slice(src.length);
+  return path;
+}
+
+/** Rename a folder and keep nested paths in sync (`unit/body` → `hero/body`). */
+export function renameAssetFolder(from: string, to: string): void {
+  const src = normalizeAssetFolder(from);
+  const dst = normalizeAssetFolder(to);
+  if (!src || !dst || src === dst) return;
+  store().commit('Rename asset folder', (d) => {
+    const list = ensureAssetFolders(d);
+    d.settings.assetFolders = [...new Set(list.map((x) => remapFolderPath(x, src, dst)))];
+    for (const a of d.assets) {
+      const next = remapFolderPath(normalizeAssetFolder(a.folder ?? ''), src, dst);
+      if (next !== a.folder) {
+        a.folder = next;
+        a.updatedAt = Date.now();
+      }
+    }
+  });
+}
+
+/**
+ * Remove a folder entry. Assets and nested folders are promoted to the parent
+ * (or top-level / unfiled if this was a root folder) — nothing is deleted.
+ */
+export function deleteAssetFolder(folder: string): void {
+  const f = normalizeAssetFolder(folder);
+  if (!f) return;
+  const parent = (() => {
+    const i = f.lastIndexOf('/');
+    return i <= 0 ? '' : f.slice(0, i);
+  })();
+  const promote = (path: string): string => {
+    if (path === f) return parent;
+    if (path.startsWith(f + '/')) {
+      const rest = path.slice(f.length + 1);
+      return parent ? `${parent}/${rest}` : rest;
+    }
+    return path;
+  };
+  store().commit('Delete asset folder', (d) => {
+    const list = ensureAssetFolders(d);
+    d.settings.assetFolders = [...new Set(list.filter((x) => x !== f).map(promote))].filter(Boolean);
+    for (const a of d.assets) {
+      const next = promote(normalizeAssetFolder(a.folder ?? ''));
+      if (next !== a.folder) {
+        a.folder = next;
+        a.updatedAt = Date.now();
+      }
+    }
+  });
+}
+
+/**
+ * Move a folder (and nested content) under `newParent` (empty = top-level).
+ * Example: `units/045` → parent `heroes` becomes `heroes/045`.
+ */
+export function moveAssetFolder(folder: string, newParent: string): void {
+  const src = normalizeAssetFolder(folder);
+  if (!src) return;
+  const parent = normalizeAssetFolder(newParent);
+  if (parent === src || parent.startsWith(src + '/')) return; // cannot move into itself
+  const leaf = src.includes('/') ? src.slice(src.lastIndexOf('/') + 1) : src;
+  const dst = parent ? `${parent}/${leaf}` : leaf;
+  if (dst === src) return;
+  renameAssetFolder(src, dst);
+}
+
 export function deleteAsset(assetId: string): void {
-  store().commit('Delete asset', (d) => {
-    d.assets = d.assets.filter((a) => a.id !== assetId);
-    for (const asm of d.assemblies) asm.sprites = asm.sprites.filter((s) => s.assetId !== assetId);
+  deleteAssets([assetId]);
+}
+
+/** Remove one or more project assets (and stage sprites that use them). Single undo step. */
+export function deleteAssets(assetIds: string[]): void {
+  const ids = [...new Set(assetIds)];
+  if (ids.length === 0) return;
+  const remove = new Set(ids);
+  store().commit(ids.length > 1 ? 'Delete assets' : 'Delete asset', (d) => {
+    d.assets = d.assets.filter((a) => !remove.has(a.id));
+    for (const asm of d.assemblies) asm.sprites = asm.sprites.filter((s) => !remove.has(s.assetId));
   });
 }
 
@@ -68,6 +200,19 @@ export function setAssetPivot(assetId: string, pivot: Vector2, transient = false
   };
   if (transient) store().update(recipe);
   else store().commit('Set pivot', recipe);
+}
+
+/** Enable (`position`) or disable (`null`) the optional 3D orbit handle on a sprite asset. */
+export function setAssetOrbitHandle(assetId: string, position: Vector2 | null, transient = false): void {
+  const recipe = (d: Draft<Project>) => {
+    const a = findAsset(d, assetId);
+    if (!a) return;
+    if (position) a.orbitHandle = { ...position };
+    else delete a.orbitHandle;
+    a.updatedAt = Date.now();
+  };
+  if (transient) store().update(recipe);
+  else store().commit(position ? 'Set 3D handle' : 'Clear 3D handle', recipe);
 }
 
 export function addAttachment(assetId: string, name: string, position: Vector2): string {
@@ -159,7 +304,16 @@ export function setInstanceTransform(id: string, transform: Transform2D, transie
   const recipe = (d: Draft<Project>) =>
     withActiveAssembly(d, (asm) => {
       const s = findInstance(asm, id);
-      if (s) s.transform = { position: { ...transform.position }, rotation: transform.rotation, scale: { ...transform.scale }, flipX: transform.flipX, flipY: transform.flipY };
+      if (s)
+        s.transform = {
+          position: { ...transform.position },
+          rotation: transform.rotation,
+          rotationX: transform.rotationX ?? 0,
+          rotationY: transform.rotationY ?? 0,
+          scale: { ...transform.scale },
+          flipX: transform.flipX,
+          flipY: transform.flipY,
+        };
     });
   if (transient) store().update(recipe);
   else store().commit('Transform sprite', recipe);
@@ -212,14 +366,18 @@ export function linkInstance(input: {
     const socket = input.childAttachmentId ? child.asset.attachments.find((a) => a.id === input.childAttachmentId)?.position : undefined;
     // Keep the child's current world rotation relative to the new frame.
     const rel = preserveWorldPose(childWorld.node, parentFrame, child.transform);
-    local = snappedLocalTransform({
-      childPivot: child.pivot,
-      childSocket: socket,
-      rotation: rel.rotation,
-      scale: rel.scale,
-      flipX: rel.flipX,
-      flipY: rel.flipY,
-    });
+    local = {
+      ...snappedLocalTransform({
+        childPivot: child.pivot,
+        childSocket: socket,
+        rotation: rel.rotation,
+        scale: rel.scale,
+        flipX: rel.flipX,
+        flipY: rel.flipY,
+      }),
+      rotationX: child.transform.rotationX ?? 0,
+      rotationY: child.transform.rotationY ?? 0,
+    };
   }
 
   store().commit('Link sprite', (d) =>
@@ -252,6 +410,41 @@ export function unlinkInstance(childId: string, resolved: ReadonlyMap<string, Re
       s.transform = local;
     }),
   );
+}
+
+/**
+ * When a child was linked via a green attachment (`childAttachmentId`), move the asset pivot
+ * onto that attachment so rotation orbits the joint. Compensates transforms so the image stays put.
+ */
+export function setPivotToChildLinkAttachment(instanceId: string, resolved: ReadonlyMap<string, ResolvedInstance>): boolean {
+  const child = resolved.get(instanceId);
+  if (!child?.instance.parentId || !child.instance.childAttachmentId) return false;
+  const socket = child.asset.attachments.find((a) => a.id === child.instance.childAttachmentId);
+  if (!socket) return false;
+
+  const newPivot = { ...socket.position };
+  const delta = { x: newPivot.x - child.pivot.x, y: newPivot.y - child.pivot.y };
+
+  store().commit('Pivot to link attachment', (d) => {
+    const a = findAsset(d, child.asset.id);
+    if (a) {
+      a.pivot = newPivot;
+      a.updatedAt = Date.now();
+    }
+    withActiveAssembly(d, (asm) => {
+      for (const s of asm.sprites) {
+        if (s.assetId !== child.asset.id) continue;
+        const rr = resolved.get(s.id);
+        if (!rr) continue;
+        if (delta.x !== 0 || delta.y !== 0) {
+          const m = multiply(localNodeMatrix(rr.transform), translation(delta.x, delta.y));
+          s.transform = decomposeNodeMatrix(m, rr.transform);
+        }
+        if (s.id === instanceId) s.childAttachmentId = undefined;
+      }
+    });
+  });
+  return true;
 }
 
 // ---- Layers ----------------------------------------------------------------------------------
@@ -338,6 +531,38 @@ export function reorderInLayer(instanceId: string, delta: number): void {
   );
 }
 
+/** Highest `orderInLayer` in the sprite's layer (renders in front). */
+export function bringToFront(instanceId: string): void {
+  store().commit('Bring to front', (d) =>
+    withActiveAssembly(d, (asm) => {
+      const s = findInstance(asm, instanceId);
+      if (!s) return;
+      const siblings = asm.sprites.filter((x) => x.layerId === s.layerId).sort((a, b) => a.orderInLayer - b.orderInLayer);
+      const idx = siblings.findIndex((x) => x.id === instanceId);
+      if (idx < 0 || idx === siblings.length - 1) return;
+      const [item] = siblings.splice(idx, 1);
+      siblings.push(item!);
+      siblings.forEach((x, i) => (x.orderInLayer = i));
+    }),
+  );
+}
+
+/** Lowest `orderInLayer` in the sprite's layer (renders behind). */
+export function sendToBack(instanceId: string): void {
+  store().commit('Send to back', (d) =>
+    withActiveAssembly(d, (asm) => {
+      const s = findInstance(asm, instanceId);
+      if (!s) return;
+      const siblings = asm.sprites.filter((x) => x.layerId === s.layerId).sort((a, b) => a.orderInLayer - b.orderInLayer);
+      const idx = siblings.findIndex((x) => x.id === instanceId);
+      if (idx <= 0) return;
+      const [item] = siblings.splice(idx, 1);
+      siblings.unshift(item!);
+      siblings.forEach((x, i) => (x.orderInLayer = i));
+    }),
+  );
+}
+
 // ---- Actions / keyframes ---------------------------------------------------------------------
 
 export function addAction(name: string, fps: number): string {
@@ -407,6 +632,8 @@ export function keyAllTransform(actionId: string, targetId: string, time: number
       if (!a) return;
       a = insertKeyframe(a, targetId, 'position', time, { ...t.position });
       a = insertKeyframe(a, targetId, 'rotation', time, t.rotation);
+      a = insertKeyframe(a, targetId, 'rotationX', time, t.rotationX ?? 0);
+      a = insertKeyframe(a, targetId, 'rotationY', time, t.rotationY ?? 0);
       a = insertKeyframe(a, targetId, 'scale', time, { ...t.scale });
       a = insertKeyframe(a, targetId, 'opacity', time, opacity);
       a = insertKeyframe(a, targetId, 'visible', time, visible, 'step');

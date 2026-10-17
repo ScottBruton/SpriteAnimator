@@ -15,8 +15,18 @@ import { Checkbox, NumberField, Select } from '../ui/Fields';
 const LABEL_W = 170;
 const ROW_H = 22;
 const RULER_H = 22;
-const PROPS: TrackProperty[] = ['position', 'rotation', 'scale', 'opacity', 'visible'];
-const PROP_LABEL: Record<string, string> = { position: 'Position', rotation: 'Rotation', scale: 'Scale', opacity: 'Opacity', visible: 'Visible', ikTarget: 'IK target', ikInfluence: 'IK influence' };
+const PROPS: TrackProperty[] = ['position', 'rotation', 'rotationX', 'rotationY', 'scale', 'opacity', 'visible'];
+const PROP_LABEL: Record<string, string> = {
+  position: 'Position',
+  rotation: 'Rot Z',
+  rotationX: 'Rot X',
+  rotationY: 'Rot Y',
+  scale: 'Scale',
+  opacity: 'Opacity',
+  visible: 'Visible',
+  ikTarget: 'IK target',
+  ikInfluence: 'IK influence',
+};
 
 type KeyRef = { targetId: string; property: TrackProperty; time: number };
 const keyId = (k: KeyRef) => `${k.targetId}|${k.property}|${k.time.toFixed(6)}`;
@@ -167,13 +177,17 @@ function TimelineBody({ action, pose, spriteNames }: { action: AnimationAction; 
           const step = delta - d.lastDelta;
           moveKeyframes(action.id, d.keys, step);
           d.keys = d.keys.map((k) => ({ ...k, time: Math.max(0, Math.min(action.duration, k.time + step)) }));
-          setSelectedKeys(d.keys);
+          // Defer selection sync to finalize — updating every move remounts RNGH's web target mid-drag.
           d.lastDelta = delta;
         }
       }
     },
     onFinalize: () => {
-      if (dragRef.current?.mode === 'keys') useProjectStore.getState().endTransaction();
+      const d = dragRef.current;
+      if (d?.mode === 'keys') {
+        setSelectedKeys(d.keys);
+        useProjectStore.getState().endTransaction();
+      }
       dragRef.current = null;
     },
   });
@@ -249,6 +263,13 @@ function TimelineBody({ action, pose, spriteNames }: { action: AnimationAction; 
         <Button icon="✕" label="Key" small onPress={deleteSelected} title="Delete selected keyframes" disabled={selectedKeys.length === 0} />
         <Checkbox label="Auto-key" value={autoKey} onChange={() => toggle('autoKey')} />
         {hasPendingEdits ? <Button label="Discard edits" small onPress={() => clearOverrides()} title="Discard un-keyed pose edits" /> : null}
+        <Button
+          label="Reset to rig"
+          small
+          onPress={() => usePoseOverrideStore.getState().resetToRigged(selectedIds.length ? selectedIds : undefined)}
+          title="Restore rigged setup pose (clear animate overrides)"
+          disabled={!hasPendingEdits && selectedIds.length === 0}
+        />
         <View style={styles.sep} />
         {selectedKeys.length ? (
           <Select<Interpolation> value={(selectedInterp || 'linear') as Interpolation} options={INTERPOLATIONS.map((i) => ({ value: i, label: i }))} compact onChange={(interpolation) => setKeyframeInterpolation(action.id, selectedKeys, interpolation)} />

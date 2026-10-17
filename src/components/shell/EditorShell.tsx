@@ -60,14 +60,14 @@ export function EditorShell() {
   }, []);
 
   const rightDock = (
-    <View style={[styles.rightDock, { width: compact ? '100%' : ed.rightWidth }]}>
+    <View style={[styles.rightDock, compact ? styles.dockFill : { width: ed.rightWidth }]}>
       <InspectorPanel pose={pose} />
       <LayersPanel />
       <AssetLibraryPanel />
     </View>
   );
   const explorer = (
-    <View style={[styles.explorer, { width: compact ? '100%' : ed.explorerWidth }]}>
+    <View style={[styles.explorer, compact ? styles.dockFill : { width: ed.explorerWidth }]}>
       <ExplorerPanel />
     </View>
   );
@@ -184,12 +184,20 @@ function useKeyboardShortcuts() {
       if (typing) return;
       if (meta && e.key.toLowerCase() === 'z') {
         e.preventDefault();
-        if (e.shiftKey) p.redo();
-        else p.undo();
+        const poseOv = usePoseOverrideStore.getState();
+        if (e.shiftKey) {
+          if (s.workspace === 'animate' && poseOv.redo()) return;
+          p.redo();
+        } else if (s.workspace === 'animate' && poseOv.undo()) {
+          return;
+        } else {
+          p.undo();
+        }
         return;
       }
       if (meta && e.key.toLowerCase() === 'y') {
         e.preventDefault();
+        if (s.workspace === 'animate' && usePoseOverrideStore.getState().redo()) return;
         p.redo();
         return;
       }
@@ -273,9 +281,25 @@ const latestPose: { current: ReturnType<typeof useEvaluatedPose> } = { current: 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg0 },
   body: { flex: 1, flexDirection: 'row', minHeight: 0 },
-  explorer: { backgroundColor: colors.bg1, borderRightWidth: 1, borderRightColor: colors.border },
-  rightDock: { backgroundColor: colors.bg1, borderLeftWidth: 1, borderLeftColor: colors.border },
-  centre: { flex: 1, minWidth: 0 },
+  explorer: {
+    backgroundColor: colors.bg1,
+    borderRightWidth: 1,
+    borderRightColor: colors.border,
+    minHeight: 0,
+    overflow: 'hidden',
+    flexShrink: 0,
+  },
+  rightDock: {
+    backgroundColor: colors.bg1,
+    borderLeftWidth: 1,
+    borderLeftColor: colors.border,
+    minHeight: 0,
+    overflow: 'hidden',
+    flexShrink: 0,
+  },
+  /** Mobile tab body: take remaining height so nested panel ScrollViews can scroll. */
+  dockFill: { flex: 1, width: '100%', minHeight: 0 },
+  centre: { flex: 1, minWidth: 0, minHeight: 0 },
   mobileTabs: { position: 'absolute', bottom: 0, left: 0, right: 0, height: sizes.touchTarget + 4, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', backgroundColor: colors.bg2, borderTopWidth: 1, borderTopColor: colors.border },
   ghostAnchor: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 },
   ghost: { position: 'absolute', alignItems: 'center', opacity: 0.85 },
