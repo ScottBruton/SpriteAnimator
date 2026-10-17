@@ -105,7 +105,17 @@ export function snapToGrid(p: Vector2, grid: number): Vector2 {
   return { x: Math.round(p.x / grid) * grid, y: Math.round(p.y / grid) * grid };
 }
 
-export type BoxHandleKind = 'orbit' | 'corner-z' | 'edge-x' | 'edge-y';
+/** Which box manipulators are active for the sole selection. */
+export type HandleMode = 'scale' | 'rotate' | 'extra';
+
+export type BoxHandleKind =
+  | 'orbit'
+  | 'corner-z'
+  | 'edge-x'
+  | 'edge-y'
+  | 'corner-scale'
+  | 'edge-scale-x'
+  | 'edge-scale-y';
 
 export interface BoxHandleHit {
   kind: BoxHandleKind;
@@ -118,16 +128,21 @@ function midpoint(a: Vector2, b: Vector2): Vector2 {
 }
 
 /**
- * Animate-mode rotation manipulators for a single selected sprite.
- * Priority: orbit → corners (Z) → edge midpoints (X top/bottom, Y left/right).
- * Corners use a larger hit radius so Z (screen-normal) wins near corners over edge tilts.
+ * Box manipulators for a single selected sprite.
+ * `scale`: corner = uniform resize, edges = axis resize.
+ * `rotate`: orbit → corners (Z) → edge midpoints (tilt X/Y).
+ * `extra`: reserved (no hits yet).
+ * Corners use a larger hit radius so they win near corners over edges.
  */
 export function pickBoxHandle(
   pose: EvaluatedPose,
   instanceId: string,
   world: Vector2,
   zoom: number,
+  mode: HandleMode = 'scale',
 ): BoxHandleHit | null {
+  if (mode === 'extra') return null;
+
   const r = pose.resolved.get(instanceId);
   const w = pose.world.get(instanceId);
   if (!r || !w) return null;
@@ -136,34 +151,44 @@ export function pickBoxHandle(
   const edgeR = 9 / zoom;
   const orbitR = 12 / zoom;
 
-  if (r.asset.orbitHandle) {
+  const [tl, tr, br, bl] = imageWorldCorners(w, r.asset.width, r.asset.height);
+  const corners = [tl, tr, br, bl];
+
+  if (mode === 'rotate' && r.asset.orbitHandle) {
     const ow = transformPoint(w.draw, r.asset.orbitHandle);
     if (vdist(ow, world) <= orbitR) return { kind: 'orbit', instanceId, world: ow };
   }
 
-  const [tl, tr, br, bl] = imageWorldCorners(w, r.asset.width, r.asset.height);
+  const cornerKind: BoxHandleKind = mode === 'scale' ? 'corner-scale' : 'corner-z';
   let bestCorner: BoxHandleHit | null = null;
   let bestCornerD = cornerR;
-  for (const c of [tl, tr, br, bl]) {
+  for (const c of corners) {
     const d = vdist(c, world);
     if (d <= bestCornerD) {
-      bestCorner = { kind: 'corner-z', instanceId, world: c };
+      bestCorner = { kind: cornerKind, instanceId, world: c };
       bestCornerD = d;
     }
   }
   if (bestCorner) return bestCorner;
 
-  const edges: { kind: BoxHandleKind; p: Vector2 }[] = [
-    { kind: 'edge-x', p: midpoint(tl, tr) },
-    { kind: 'edge-x', p: midpoint(bl, br) },
-    { kind: 'edge-y', p: midpoint(tl, bl) },
-    { kind: 'edge-y', p: midpoint(tr, br) },
-  ];
+  const edgeKinds =
+    mode === 'scale'
+      ? ([
+          { kind: 'edge-scale-x' as const, p: midpoint(tl, tr) },
+          { kind: 'edge-scale-x' as const, p: midpoint(bl, br) },
+          { kind: 'edge-scale-y' as const, p: midpoint(tl, bl) },
+          { kind: 'edge-scale-y' as const, p: midpoint(tr, br) },
+        ] as const)
+      : ([
+          { kind: 'edge-x' as const, p: midpoint(tl, tr) },
+          { kind: 'edge-x' as const, p: midpoint(bl, br) },
+          { kind: 'edge-y' as const, p: midpoint(tl, bl) },
+          { kind: 'edge-y' as const, p: midpoint(tr, br) },
+        ] as const);
   let bestEdge: BoxHandleHit | null = null;
   let bestEdgeD = edgeR;
-  for (const e of edges) {
-    // Don't steal hits that belong to a nearby corner.
-    if ([tl, tr, br, bl].some((c) => vdist(c, world) <= cornerR)) continue;
+  for (const e of edgeKinds) {
+    if (corners.some((c) => vdist(c, world) <= cornerR)) continue;
     const d = vdist(e.p, world);
     if (d <= bestEdgeD) {
       bestEdge = { kind: e.kind, instanceId, world: e.p };

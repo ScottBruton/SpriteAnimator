@@ -270,11 +270,52 @@ export function SectionTitle({ children }: { children: React.ReactNode }) {
   return <Text style={styles.sectionTitle}>{children}</Text>;
 }
 
+/** Clickable section header that shows/hides its body (▸ / ▾). */
+export function CollapsibleSection({
+  title,
+  children,
+  defaultCollapsed = false,
+  style,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultCollapsed?: boolean;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  return (
+    <View style={style}>
+      <Pressable
+        onPress={() => setCollapsed((c) => !c)}
+        style={styles.collapseHeader}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: !collapsed }}
+      >
+        <Text style={styles.collapseChevron}>{collapsed ? '▸' : '▾'}</Text>
+        <Text style={styles.sectionTitleInline}>{title}</Text>
+      </Pressable>
+      {collapsed ? null : <View style={styles.collapseBody}>{children}</View>}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   fieldRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 22 },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
   label: { color: colors.textMuted, fontSize: font.sm, minWidth: 14 },
   sectionTitle: { color: colors.textDim, fontSize: font.xs, letterSpacing: 1, textTransform: 'uppercase', marginTop: spacing.md, marginBottom: spacing.xs },
+  sectionTitleInline: { color: colors.textDim, fontSize: font.xs, letterSpacing: 1, textTransform: 'uppercase', flex: 1 },
+  collapseHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: 22,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
+    paddingVertical: 2,
+  },
+  collapseChevron: { color: colors.textDim, fontSize: font.xs, width: 10 },
+  collapseBody: { gap: spacing.sm },
   numberBox: {
     flexDirection: 'row',
     alignItems: 'center',

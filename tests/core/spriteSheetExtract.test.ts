@@ -5,7 +5,9 @@ import {
   contentBounds,
   extractGridCells,
   isBackgroundPixel,
+  partLetter,
   sampleBackgroundFromCorners,
+  splitConnectedParts,
   trimPixels,
 } from '@/importers/spriteSheetExtract';
 
@@ -79,6 +81,9 @@ describe('spriteSheetExtract', () => {
       tolerance: 20,
       trim: true,
       trimPadding: 0,
+      splitParts: false,
+      minPartPixels: 64,
+      minPartRatio: 0.08,
       insets: { left: 0, right: 0, top: 0, bottom: 0 },
     });
     expect(background.r + background.g + background.b).toBeLessThan(30);
@@ -103,6 +108,9 @@ describe('spriteSheetExtract', () => {
       tolerance: 30,
       trim: true,
       trimPadding: 0,
+      splitParts: false,
+      minPartPixels: 64,
+      minPartRatio: 0.08,
       insets: { left: 0, right: 0, top: 0, bottom: 0 },
     });
     expect(cells[0]!.empty).toBe(false);
@@ -132,8 +140,100 @@ describe('spriteSheetExtract', () => {
       tolerance: 10,
       trim: true,
       trimPadding: 0,
+      splitParts: false,
+      minPartPixels: 64,
+      minPartRatio: 0.08,
       insets: { left: 0, right: 0, top: 0, bottom: 0 },
     });
     expect(cells.every((c) => c.empty)).toBe(true);
+  });
+
+  test('partLetter uses a..z then pN', () => {
+    expect(partLetter(0)).toBe('a');
+    expect(partLetter(25)).toBe('z');
+    expect(partLetter(26)).toBe('p27');
+  });
+
+  test('splitConnectedParts separates two blobs and sorts left-to-right', () => {
+    const w = 12;
+    const h = 6;
+    const px = makeRgba(w, h, [0, 0, 0, 0]);
+    // Right blob first in scan order, left blob second — sort should still put left first.
+    for (let y = 1; y <= 3; y++) for (let x = 7; x <= 9; x++) putPixel(px, w, x, y, [0, 200, 0, 255]);
+    for (let y = 1; y <= 3; y++) for (let x = 1; x <= 3; x++) putPixel(px, w, x, y, [200, 0, 0, 255]);
+    const parts = splitConnectedParts(px, w, h, { minPixels: 4, padding: 0, minPartRatio: 0 });
+    expect(parts).toHaveLength(2);
+    expect(parts[0]!.bounds.x).toBe(1);
+    expect(parts[1]!.bounds.x).toBe(7);
+    expect(parts[0]!.width).toBe(3);
+    expect(parts[0]!.height).toBe(3);
+  });
+
+  test('splitParts extracts two sprites from one grid cell', () => {
+    const w = 20;
+    const h = 10;
+    const px = makeRgba(w, h, [0, 0, 0, 255]);
+    // Cell 0 (cols 0–9): two separate red squares
+    for (let y = 2; y <= 4; y++) for (let x = 1; x <= 3; x++) putPixel(px, w, x, y, [220, 30, 30, 255]);
+    for (let y = 2; y <= 4; y++) for (let x = 6; x <= 8; x++) putPixel(px, w, x, y, [30, 30, 220, 255]);
+    // Cell 1: one green square
+    for (let y = 2; y <= 4; y++) for (let x = 12; x <= 14; x++) putPixel(px, w, x, y, [30, 220, 30, 255]);
+
+    const { cells } = extractGridCells(px, w, h, {
+      columns: 2,
+      rows: 1,
+      tolerance: 20,
+      trim: true,
+      trimPadding: 0,
+      splitParts: true,
+      minPartPixels: 4,
+      minPartRatio: 0.08,
+      insets: { left: 0, right: 0, top: 0, bottom: 0 },
+    });
+    const nonempty = cells.filter((c) => !c.empty);
+    expect(nonempty).toHaveLength(3);
+    expect(nonempty[0]!.index).toBe(0);
+    expect(nonempty[0]!.partCount).toBe(2);
+    expect(nonempty[0]!.partIndex).toBe(0);
+    expect(nonempty[1]!.index).toBe(0);
+    expect(nonempty[1]!.partIndex).toBe(1);
+    expect(nonempty[2]!.index).toBe(1);
+    expect(nonempty[2]!.partCount).toBe(1);
+  });
+
+  test('minPartPixels drops tiny noise blobs', () => {
+    const w = 10;
+    const h = 10;
+    const px = makeRgba(w, h, [0, 0, 0, 0]);
+    for (let y = 2; y <= 5; y++) for (let x = 2; x <= 5; x++) putPixel(px, w, x, y, [255, 0, 0, 255]);
+    putPixel(px, w, 8, 8, [0, 255, 0, 255]);
+    const parts = splitConnectedParts(px, w, h, { minPixels: 8, padding: 0, minPartRatio: 0 });
+    expect(parts).toHaveLength(1);
+    expect(parts[0]!.pixelCount).toBe(16);
+  });
+
+  test('minPartRatio drops shadow islands much smaller than the main parts', () => {
+    const w = 40;
+    const h = 20;
+    const px = makeRgba(w, h, [0, 0, 0, 0]);
+    // Two large arms (~100 px each)
+    for (let y = 2; y <= 11; y++) for (let x = 2; x <= 11; x++) putPixel(px, w, x, y, [200, 50, 50, 255]);
+    for (let y = 2; y <= 11; y++) for (let x = 22; x <= 31; x++) putPixel(px, w, x, y, [50, 50, 200, 255]);
+    // Mid-size fringe island (~5% of an arm) — kept by absolute floor, dropped by ratio.
+    for (let y = 15; y <= 16; y++) for (let x = 14; x <= 16; x++) putPixel(px, w, x, y, [5, 5, 5, 255]);
+    // Low-alpha fringe — ignored by minAlpha.
+    putPixel(px, w, 38, 18, [8, 8, 8, 20]);
+    putPixel(px, w, 39, 18, [8, 8, 8, 20]);
+    putPixel(px, w, 38, 19, [8, 8, 8, 20]);
+
+    const parts = splitConnectedParts(px, w, h, {
+      minPixels: 4,
+      padding: 0,
+      minAlpha: 32,
+      minPartRatio: 0.08,
+    });
+    expect(parts).toHaveLength(2);
+    expect(parts[0]!.pixelCount).toBe(100);
+    expect(parts[1]!.pixelCount).toBe(100);
   });
 });

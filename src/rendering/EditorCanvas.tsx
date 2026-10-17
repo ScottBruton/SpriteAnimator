@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import { Canvas, Group, Rect } from '@shopify/react-native-skia';
 import { GestureDetector } from 'react-native-gesture-handler';
-import { attachmentWorldPosition, pivotWorldPosition, type EvaluatedPose } from '@elemental/animation-core';
+import { attachmentWorldPosition, imageWorldCorners, pivotWorldPosition, type EvaluatedPose } from '@elemental/animation-core';
 import { RenderListView, sharedImageRegistry, useImageRegistry } from '@elemental/animation-runtime';
 import { spriteContextMenuItems } from '@/components/canvas/spriteContextMenu';
 import { ContextMenu } from '@/components/ui/Menu';
-import { pickInstance } from '@/engine/picking';
+import { pickInstance, type HandleMode } from '@/engine/picking';
 import { useEditorStore } from '@/state/editorStore';
 import { useActiveAssembly, useAssetLookup, useProjectStore } from '@/state/projectStore';
 import { colors, font } from '@/theme/tokens';
@@ -16,6 +16,12 @@ import { Rulers, RULER_SIZE } from './Rulers';
 import { poseStageBounds } from './stageBounds';
 import { useCanvasInteraction, type CanvasContextMenuRequest } from './useCanvasInteraction';
 import { screenToWorld, viewToMatrix, worldToScreen } from './viewTransform';
+
+const HANDLE_MODE_CHIPS: { mode: HandleMode; color: string; label: string }[] = [
+  { mode: 'scale', color: colors.success, label: 'Scale' },
+  { mode: 'rotate', color: colors.danger, label: 'Rotate' },
+  { mode: 'extra', color: colors.orbitHandle, label: 'More' },
+];
 
 export interface EditorCanvasProps {
   pose: EvaluatedPose | null;
@@ -39,6 +45,8 @@ export function EditorCanvas({ pose }: EditorCanvasProps) {
   const hoveredId = useEditorStore((s) => s.hoveredId);
   const snap = useEditorStore((s) => s.snapIndicator);
   const tool = useEditorStore((s) => s.tool);
+  const handleMode = useEditorStore((s) => s.handleMode);
+  const setHandleMode = useEditorStore((s) => s.setHandleMode);
   const workspace = useEditorStore((s) => s.workspace);
   const activeActionId = useEditorStore((s) => s.activeActionId);
   const assembly = useActiveAssembly();
@@ -220,16 +228,32 @@ export function EditorCanvas({ pose }: EditorCanvasProps) {
 
   const inner = { width: Math.max(0, size.width - (showRulers ? RULER_SIZE : 0)), height: Math.max(0, size.height - (showRulers ? RULER_SIZE : 0)) };
   const animate = workspace === 'animate' && !!activeActionId;
+  const hoverKind = state.hoverHandle?.kind;
   const cursor =
     tool === 'pan'
       ? 'grab'
-      : state.hoverHandle?.kind === 'corner-z' || tool === 'rotate'
+      : hoverKind === 'corner-z' || tool === 'rotate'
         ? 'crosshair'
-        : state.hoverHandle?.kind === 'edge-x'
+        : hoverKind === 'edge-x' || hoverKind === 'edge-scale-x'
           ? 'ns-resize'
-          : state.hoverHandle?.kind === 'edge-y' || state.hoverHandle?.kind === 'orbit'
+          : hoverKind === 'edge-y' || hoverKind === 'edge-scale-y' || hoverKind === 'orbit'
             ? 'ew-resize'
-            : 'default';
+            : hoverKind === 'corner-scale' || tool === 'scale'
+              ? 'nwse-resize'
+              : 'default';
+
+  const showHandleModes = (workspace === 'rigging' || animate) && selectedIds.length === 1;
+  const handleModeAnchor = useMemo(() => {
+    if (!showHandleModes || !pose) return null;
+    const id = selectedIds[0]!;
+    const r = pose.resolved.get(id);
+    const w = pose.world.get(id);
+    if (!r || !w) return null;
+    const corners = imageWorldCorners(w, r.asset.width, r.asset.height).map((c) => worldToScreen(view, c));
+    const right = Math.max(...corners.map((c) => c.x));
+    const top = Math.min(...corners.map((c) => c.y));
+    return { x: right - 52, y: top - 22 };
+  }, [showHandleModes, pose, selectedIds, view]);
 
   // Scrollable stage size in screen px (content bounds × zoom, at least the viewport).
   const stageW = Math.max(inner.width, (bounds.maxX - bounds.minX) * view.zoom + inner.width);
@@ -342,6 +366,7 @@ export function EditorCanvas({ pose }: EditorCanvasProps) {
                         marquee={state.marquee}
                         linkDrag={state.linkDrag}
                       showBoxHandles={(workspace === 'rigging' || animate) && selectedIds.length === 1}
+                      handleMode={handleMode}
                       hoverHandle={state.hoverHandle}
                       />
                     </Group>
@@ -355,6 +380,32 @@ export function EditorCanvas({ pose }: EditorCanvasProps) {
               ))}
             </View>
           </GestureDetector>
+          {handleModeAnchor ? (
+            <View
+              style={[styles.handleModes, { left: handleModeAnchor.x, top: handleModeAnchor.y }]}
+              // Outside the gesture detector so chip taps are not treated as canvas drags.
+              pointerEvents="box-none"
+            >
+              {HANDLE_MODE_CHIPS.map((chip) => {
+                const active = handleMode === chip.mode;
+                return (
+                  <Pressable
+                    key={chip.mode}
+                    accessibilityLabel={chip.label}
+                    accessibilityRole="button"
+                    onPress={() => setHandleMode(chip.mode)}
+                    style={[
+                      styles.handleModeChip,
+                      {
+                        borderColor: chip.color,
+                        backgroundColor: active ? chip.color : 'rgba(16,17,20,0.85)',
+                      },
+                    ]}
+                  />
+                );
+              })}
+            </View>
+          ) : null}
         </View>
       </View>
       <ContextMenu
@@ -376,6 +427,18 @@ const styles = StyleSheet.create({
   inner: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, overflow: 'hidden' },
   stageScroll: { ...StyleSheet.absoluteFill },
   stageOverlay: { ...StyleSheet.absoluteFill },
+  handleModes: {
+    position: 'absolute',
+    flexDirection: 'row',
+    gap: 6,
+    zIndex: 5,
+  },
+  handleModeChip: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+  },
   label: {
     position: 'absolute',
     color: colors.attachmentLabel,

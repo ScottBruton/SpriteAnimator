@@ -9,10 +9,51 @@ import {
   transformPoint,
   type EvaluatedPose,
 } from '@elemental/animation-core';
-import type { BoxHandleKind } from '@/engine/picking';
+import type { BoxHandleKind, HandleMode } from '@/engine/picking';
 import type { SnapIndicator, ViewState } from '@/state/editorStore';
 import { colors } from '@/theme/tokens';
 import { adaptiveGridStep, worldToScreen } from './viewTransform';
+
+function scaleArrowPath(cx: number, cy: number, axis: 'diag' | 'h' | 'v', len = 7) {
+  const p = Skia.PathBuilder.Make();
+  const tip = 3;
+  if (axis === 'h') {
+    p.moveTo(cx - len, cy);
+    p.lineTo(cx + len, cy);
+    p.moveTo(cx - len, cy);
+    p.lineTo(cx - len + tip, cy - tip);
+    p.moveTo(cx - len, cy);
+    p.lineTo(cx - len + tip, cy + tip);
+    p.moveTo(cx + len, cy);
+    p.lineTo(cx + len - tip, cy - tip);
+    p.moveTo(cx + len, cy);
+    p.lineTo(cx + len - tip, cy + tip);
+  } else if (axis === 'v') {
+    p.moveTo(cx, cy - len);
+    p.lineTo(cx, cy + len);
+    p.moveTo(cx, cy - len);
+    p.lineTo(cx - tip, cy - len + tip);
+    p.moveTo(cx, cy - len);
+    p.lineTo(cx + tip, cy - len + tip);
+    p.moveTo(cx, cy + len);
+    p.lineTo(cx - tip, cy + len - tip);
+    p.moveTo(cx, cy + len);
+    p.lineTo(cx + tip, cy + len - tip);
+  } else {
+    const d = len * 0.75;
+    p.moveTo(cx - d, cy - d);
+    p.lineTo(cx + d, cy + d);
+    p.moveTo(cx - d, cy - d);
+    p.lineTo(cx - d + tip, cy - d);
+    p.moveTo(cx - d, cy - d);
+    p.lineTo(cx - d, cy - d + tip);
+    p.moveTo(cx + d, cy + d);
+    p.lineTo(cx + d - tip, cy + d);
+    p.moveTo(cx + d, cy + d);
+    p.lineTo(cx + d, cy + d - tip);
+  }
+  return p.detach();
+}
 
 function dashedSegmentPath(a: Vector2, b: Vector2, dash = 5, gap = 4) {
   const p = Skia.PathBuilder.Make();
@@ -114,8 +155,9 @@ export interface OverlayProps {
   snap: SnapIndicator | null;
   marquee: { a: Vector2; b: Vector2 } | null;
   linkDrag: { from: Vector2; to: Vector2 } | null;
-  /** When true, draw Animate-mode corner / edge / orbit rotation handles on the selection. */
+  /** When true, draw box manipulators on the sole selection. */
   showBoxHandles?: boolean;
+  handleMode?: HandleMode;
   hoverHandle?: { instanceId: string; kind: BoxHandleKind } | null;
 }
 
@@ -132,6 +174,7 @@ export function RigOverlays({
   marquee,
   linkDrag,
   showBoxHandles = false,
+  handleMode = 'scale',
   hoverHandle = null,
 }: OverlayProps) {
   const selected = new Set(selectedIds);
@@ -192,55 +235,76 @@ export function RigOverlays({
       items.push(<Line key={`ph-${id}`} p1={{ x: s.x - 10, y: s.y }} p2={{ x: s.x + 10, y: s.y }} color={colors.pivot} strokeWidth={emphasis ? 1.5 : 1} opacity={emphasis ? 1 : 0.75} />);
       items.push(<Line key={`pv-${id}`} p1={{ x: s.x, y: s.y - 10 }} p2={{ x: s.x, y: s.y + 10 }} color={colors.pivot} strokeWidth={emphasis ? 1.5 : 1} opacity={emphasis ? 1 : 0.75} />);
     }
-    // Box rotation handles only when this is the sole selection (matches interaction).
-    if (showBoxHandles && isSel && selectedIds.length === 1) {
+    // Box handles only when this is the sole selection (matches interaction).
+    if (showBoxHandles && isSel && selectedIds.length === 1 && handleMode !== 'extra') {
       const cornersWorld = imageWorldCorners(w, r.asset.width, r.asset.height);
       const tl = worldToScreen(view, cornersWorld[0]);
       const tr = worldToScreen(view, cornersWorld[1]);
       const br = worldToScreen(view, cornersWorld[2]);
       const bl = worldToScreen(view, cornersWorld[3]);
-      const mids = [
-        { kind: 'edge-x' as const, p: { x: (tl.x + tr.x) / 2, y: (tl.y + tr.y) / 2 } },
-        { kind: 'edge-x' as const, p: { x: (bl.x + br.x) / 2, y: (bl.y + br.y) / 2 } },
-        { kind: 'edge-y' as const, p: { x: (tl.x + bl.x) / 2, y: (tl.y + bl.y) / 2 } },
-        { kind: 'edge-y' as const, p: { x: (tr.x + br.x) / 2, y: (tr.y + br.y) / 2 } },
-      ];
       const corners = [tl, tr, br, bl];
-      for (let ci = 0; ci < corners.length; ci++) {
-        const c = corners[ci]!;
-        const hot = hoverHandle?.instanceId === id && hoverHandle.kind === 'corner-z';
-        // Rotate (Z) cue: filled corner disc + small arc ticks.
-        items.push(<Circle key={`bz-${id}-${ci}`} cx={c.x} cy={c.y} r={hot ? 7 : 5.5} color={colors.selection} style={hot ? 'fill' : 'stroke'} strokeWidth={2} />);
-        const tick = 5;
-        items.push(
-          <Path
-            key={`bza-${id}-${ci}`}
-            path={(() => {
-              const p = Skia.PathBuilder.Make();
-              p.moveTo(c.x + tick, c.y - tick * 0.2);
-              p.lineTo(c.x + tick, c.y - tick);
-              p.lineTo(c.x + tick * 0.2, c.y - tick);
-              return p.detach();
-            })()}
-            color={colors.selection}
-            style="stroke"
-            strokeWidth={1.5}
-          />,
-        );
-      }
-      for (let mi = 0; mi < mids.length; mi++) {
-        const m = mids[mi]!;
-        const hot = hoverHandle?.instanceId === id && hoverHandle.kind === m.kind;
-        const col = m.kind === 'edge-x' ? colors.warning : colors.orbitHandle;
-        items.push(<Rect key={`be-${id}-${mi}`} x={m.p.x - (hot ? 5 : 4)} y={m.p.y - (hot ? 5 : 4)} width={hot ? 10 : 8} height={hot ? 10 : 8} color={col} style={hot ? 'fill' : 'stroke'} strokeWidth={1.5} />);
-      }
-      if (r.asset.orbitHandle) {
-        const ow = worldToScreen(view, transformPoint(w.draw, r.asset.orbitHandle));
-        const hot = hoverHandle?.instanceId === id && hoverHandle.kind === 'orbit';
-        items.push(<Circle key={`orb-${id}`} cx={ow.x} cy={ow.y} r={hot ? 8 : 6} color={colors.orbitHandle} style="stroke" strokeWidth={2} />);
-        items.push(<Circle key={`orbd-${id}`} cx={ow.x} cy={ow.y} r={2} color={colors.orbitHandle} />);
-        items.push(<Line key={`orbx-${id}`} p1={{ x: ow.x - 10, y: ow.y }} p2={{ x: ow.x + 10, y: ow.y }} color={colors.orbitHandle} strokeWidth={1} opacity={0.85} />);
-        items.push(<Line key={`orby-${id}`} p1={{ x: ow.x, y: ow.y - 10 }} p2={{ x: ow.x, y: ow.y + 10 }} color={colors.orbitHandle} strokeWidth={1} opacity={0.85} />);
+      if (handleMode === 'scale') {
+        const mids = [
+          { kind: 'edge-scale-x' as const, p: { x: (tl.x + tr.x) / 2, y: (tl.y + tr.y) / 2 }, axis: 'v' as const },
+          { kind: 'edge-scale-x' as const, p: { x: (bl.x + br.x) / 2, y: (bl.y + br.y) / 2 }, axis: 'v' as const },
+          { kind: 'edge-scale-y' as const, p: { x: (tl.x + bl.x) / 2, y: (tl.y + bl.y) / 2 }, axis: 'h' as const },
+          { kind: 'edge-scale-y' as const, p: { x: (tr.x + br.x) / 2, y: (tr.y + br.y) / 2 }, axis: 'h' as const },
+        ];
+        for (let ci = 0; ci < corners.length; ci++) {
+          const c = corners[ci]!;
+          const hot = hoverHandle?.instanceId === id && hoverHandle.kind === 'corner-scale';
+          items.push(<Circle key={`bs-${id}-${ci}`} cx={c.x} cy={c.y} r={hot ? 7 : 5.5} color={colors.success} style={hot ? 'fill' : 'stroke'} strokeWidth={2} />);
+          items.push(<Path key={`bsa-${id}-${ci}`} path={scaleArrowPath(c.x, c.y, 'diag', hot ? 8 : 6)} color={hot ? colors.bg0 : colors.success} style="stroke" strokeWidth={1.5} />);
+        }
+        for (let mi = 0; mi < mids.length; mi++) {
+          const m = mids[mi]!;
+          const hot = hoverHandle?.instanceId === id && hoverHandle.kind === m.kind;
+          const col = m.kind === 'edge-scale-x' ? colors.warning : colors.orbitHandle;
+          items.push(<Rect key={`bse-${id}-${mi}`} x={m.p.x - (hot ? 6 : 5)} y={m.p.y - (hot ? 6 : 5)} width={hot ? 12 : 10} height={hot ? 12 : 10} color={col} style={hot ? 'fill' : 'stroke'} strokeWidth={1.5} />);
+          items.push(<Path key={`bsea-${id}-${mi}`} path={scaleArrowPath(m.p.x, m.p.y, m.axis, hot ? 7 : 5)} color={hot ? colors.bg0 : col} style="stroke" strokeWidth={1.5} />);
+        }
+      } else {
+        const mids = [
+          { kind: 'edge-x' as const, p: { x: (tl.x + tr.x) / 2, y: (tl.y + tr.y) / 2 } },
+          { kind: 'edge-x' as const, p: { x: (bl.x + br.x) / 2, y: (bl.y + br.y) / 2 } },
+          { kind: 'edge-y' as const, p: { x: (tl.x + bl.x) / 2, y: (tl.y + bl.y) / 2 } },
+          { kind: 'edge-y' as const, p: { x: (tr.x + br.x) / 2, y: (tr.y + br.y) / 2 } },
+        ];
+        for (let ci = 0; ci < corners.length; ci++) {
+          const c = corners[ci]!;
+          const hot = hoverHandle?.instanceId === id && hoverHandle.kind === 'corner-z';
+          items.push(<Circle key={`bz-${id}-${ci}`} cx={c.x} cy={c.y} r={hot ? 7 : 5.5} color={colors.selection} style={hot ? 'fill' : 'stroke'} strokeWidth={2} />);
+          const tick = 5;
+          items.push(
+            <Path
+              key={`bza-${id}-${ci}`}
+              path={(() => {
+                const p = Skia.PathBuilder.Make();
+                p.moveTo(c.x + tick, c.y - tick * 0.2);
+                p.lineTo(c.x + tick, c.y - tick);
+                p.lineTo(c.x + tick * 0.2, c.y - tick);
+                return p.detach();
+              })()}
+              color={colors.selection}
+              style="stroke"
+              strokeWidth={1.5}
+            />,
+          );
+        }
+        for (let mi = 0; mi < mids.length; mi++) {
+          const m = mids[mi]!;
+          const hot = hoverHandle?.instanceId === id && hoverHandle.kind === m.kind;
+          const col = m.kind === 'edge-x' ? colors.warning : colors.orbitHandle;
+          items.push(<Rect key={`be-${id}-${mi}`} x={m.p.x - (hot ? 5 : 4)} y={m.p.y - (hot ? 5 : 4)} width={hot ? 10 : 8} height={hot ? 10 : 8} color={col} style={hot ? 'fill' : 'stroke'} strokeWidth={1.5} />);
+        }
+        if (r.asset.orbitHandle) {
+          const ow = worldToScreen(view, transformPoint(w.draw, r.asset.orbitHandle));
+          const hot = hoverHandle?.instanceId === id && hoverHandle.kind === 'orbit';
+          items.push(<Circle key={`orb-${id}`} cx={ow.x} cy={ow.y} r={hot ? 8 : 6} color={colors.orbitHandle} style="stroke" strokeWidth={2} />);
+          items.push(<Circle key={`orbd-${id}`} cx={ow.x} cy={ow.y} r={2} color={colors.orbitHandle} />);
+          items.push(<Line key={`orbx-${id}`} p1={{ x: ow.x - 10, y: ow.y }} p2={{ x: ow.x + 10, y: ow.y }} color={colors.orbitHandle} strokeWidth={1} opacity={0.85} />);
+          items.push(<Line key={`orby-${id}`} p1={{ x: ow.x, y: ow.y - 10 }} p2={{ x: ow.x, y: ow.y + 10 }} color={colors.orbitHandle} strokeWidth={1} opacity={0.85} />);
+        }
       }
     }
   }

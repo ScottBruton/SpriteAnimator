@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import type { Direction } from '@elemental/asset-schema';
+import type { HandleMode } from '@/engine/picking';
 
 export type Workspace = 'rigging' | 'animate' | 'assembly';
 export type Tool = 'select' | 'move' | 'rotate' | 'scale' | 'pivot' | 'attachment' | 'link' | 'pan' | 'zoom';
+export type { HandleMode };
 
 export interface ViewState {
   zoom: number;
@@ -22,6 +24,8 @@ export interface SnapIndicator {
 interface EditorState {
   workspace: Workspace;
   tool: Tool;
+  /** Which selection-box handles are active (default scale). */
+  handleMode: HandleMode;
   selectedIds: string[];
   hoveredId: string | null;
   view: ViewState;
@@ -70,6 +74,7 @@ interface EditorState {
   setSelectedKeys: (k: { targetId: string; property: string; time: number }[]) => void;
   setKeyClipboard: (k: EditorState['keyClipboard']) => void;
   setTool: (t: Tool) => void;
+  setHandleMode: (m: HandleMode) => void;
   select: (ids: string[], opts?: { toggle?: boolean }) => void;
   setHovered: (id: string | null) => void;
   setView: (v: Partial<ViewState>) => void;
@@ -92,6 +97,7 @@ interface EditorState {
 export const useEditorStore = create<EditorState>((set, get) => ({
   workspace: 'rigging',
   tool: 'select',
+  handleMode: 'scale',
   selectedIds: [],
   hoveredId: null,
   view: { zoom: 1, panX: 0, panY: 0 },
@@ -129,6 +135,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setSelectedKeys: (selectedKeys) => set({ selectedKeys }),
   setKeyClipboard: (keyClipboard) => set({ keyClipboard }),
   setTool: (tool) => set({ tool }),
+  setHandleMode: (handleMode) => set({ handleMode }),
   select: (ids, opts) => {
     if (opts?.toggle) {
       const cur = new Set(get().selectedIds);

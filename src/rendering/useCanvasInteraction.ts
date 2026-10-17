@@ -23,7 +23,7 @@ import {
   type Mat2D,
 } from '@elemental/animation-core';
 import { keyAllTransform, linkInstance, setAssetPivot, setInstanceTransform, updateAttachment, addAttachment } from '@/engine/commands';
-import { findSnapTarget, pickBoxHandle, pickHandle, pickInstance, snapToGrid, type BoxHandleKind } from '@/engine/picking';
+import { findSnapTarget, pickBoxHandle, pickHandle, pickInstance, snapToGrid, type BoxHandleKind, type HandleMode } from '@/engine/picking';
 import { useEditorStore } from '@/state/editorStore';
 import { usePoseOverrideStore } from '@/state/poseOverrideStore';
 import { useProjectStore } from '@/state/projectStore';
@@ -43,7 +43,17 @@ type DragMode =
   | { kind: 'orbit3d'; id: string; start: Transform2D; startScreen: Vector2 }
   | { kind: 'tilt-x'; id: string; start: Transform2D; startScreenY: number }
   | { kind: 'tilt-y'; id: string; start: Transform2D; startScreenX: number }
-  | { kind: 'box-z'; id: string; start: Transform2D; pivotWorld: Vector2; parentFrame: Mat2D; startAngle: number };
+  | { kind: 'box-z'; id: string; start: Transform2D; pivotWorld: Vector2; parentFrame: Mat2D; startAngle: number }
+  | {
+      kind: 'box-scale';
+      id: string;
+      axis: 'uniform' | 'x' | 'y';
+      start: Transform2D;
+      pivotWorld: Vector2;
+      startDist: number;
+      /** Unit axis in world space at drag start (edge scale only). */
+      axisDir?: Vector2;
+    };
 
 export interface InteractionState {
   marquee: { a: Vector2; b: Vector2 } | null;
@@ -139,14 +149,15 @@ export function useCanvasInteraction(
     }
     if (!pose) return;
 
-    // Bounds / orbit rotation handles — single unlocked selection (Rigging or Animate).
+    // Bounds / scale / rotation handles — single unlocked selection (Rigging or Animate).
     if (
       s.selectedIds.length === 1 &&
       !lockedIds().has(s.selectedIds[0]!) &&
-      (tool === 'select' || tool === 'move' || tool === 'rotate')
+      (tool === 'select' || tool === 'move' || tool === 'rotate' || tool === 'scale')
     ) {
       const onlyId = s.selectedIds[0]!;
-      const box = pickBoxHandle(pose, onlyId, world, s.view.zoom);
+      const mode = (s.handleMode ?? 'scale') as HandleMode;
+      const box = pickBoxHandle(pose, onlyId, world, s.view.zoom, mode);
       if (box) {
         const r = pose.resolved.get(box.instanceId);
         const w = pose.world.get(box.instanceId);
@@ -158,6 +169,36 @@ export function useCanvasInteraction(
             rotationX: r.transform.rotationX ?? 0,
             rotationY: r.transform.rotationY ?? 0,
           };
+          if (box.kind === 'corner-scale' || box.kind === 'edge-scale-x' || box.kind === 'edge-scale-y') {
+            const pv = pivotWorldPosition(w);
+            const dx = world.x - pv.x;
+            const dy = world.y - pv.y;
+            // Project onto local image axes so edge drags stay correct when rotated.
+            const lx = { x: w.draw[0], y: w.draw[1] };
+            const ly = { x: w.draw[2], y: w.draw[3] };
+            const lxLen = Math.hypot(lx.x, lx.y) || 1;
+            const lyLen = Math.hypot(ly.x, ly.y) || 1;
+            const ux = { x: lx.x / lxLen, y: lx.y / lxLen };
+            const uy = { x: ly.x / lyLen, y: ly.y / lyLen };
+            let startDist: number;
+            let axis: 'uniform' | 'x' | 'y';
+            let axisDir: Vector2 | undefined;
+            if (box.kind === 'edge-scale-y') {
+              axis = 'x';
+              axisDir = ux;
+              startDist = Math.max(1e-3, Math.abs(dx * ux.x + dy * ux.y));
+            } else if (box.kind === 'edge-scale-x') {
+              axis = 'y';
+              axisDir = uy;
+              startDist = Math.max(1e-3, Math.abs(dx * uy.x + dy * uy.y));
+            } else {
+              axis = 'uniform';
+              startDist = Math.max(1e-3, Math.hypot(dx, dy));
+            }
+            beginEdit('Scale sprite');
+            drag.current = { kind: 'box-scale', id: box.instanceId, axis, start: startT, pivotWorld: pv, startDist, axisDir };
+            return;
+          }
           beginEdit('Rotate sprite');
           if (box.kind === 'orbit') {
             drag.current = { kind: 'orbit3d', id: box.instanceId, start: startT, startScreen: { x: sx, y: sy } };
@@ -394,6 +435,22 @@ export function useCanvasInteraction(
         }
         return;
       }
+      case 'box-scale': {
+        const dx = world.x - d.pivotWorld.x;
+        const dy = world.y - d.pivotWorld.y;
+        if (d.axis === 'uniform' || !d.axisDir) {
+          const k = Math.max(0.01, Math.hypot(dx, dy) / d.startDist);
+          applyTransform(d.id, { ...d.start, scale: { x: d.start.scale.x * k, y: d.start.scale.y * k } });
+        } else {
+          const k = Math.max(0.01, Math.abs(dx * d.axisDir.x + dy * d.axisDir.y) / d.startDist);
+          if (d.axis === 'x') {
+            applyTransform(d.id, { ...d.start, scale: { x: d.start.scale.x * k, y: d.start.scale.y } });
+          } else {
+            applyTransform(d.id, { ...d.start, scale: { x: d.start.scale.x, y: d.start.scale.y * k } });
+          }
+        }
+        return;
+      }
       case 'link': {
         if (!pose) return;
         const target = settings.snapToAttachments ? findSnapTarget(pose, world, new Set([d.id, ...descendants(pose, d.id)]), settings.snapTolerance / s.view.zoom) : null;
@@ -511,6 +568,7 @@ export function useCanvasInteraction(
       case 'tilt-x':
       case 'tilt-y':
       case 'box-z':
+      case 'box-scale':
         finishTransformEdit([d.id]);
         return;
       case 'link': {
@@ -681,7 +739,8 @@ export function useCanvasInteraction(
         if (id !== s.hoveredId) s.setHovered(id);
         let hoverHandle: InteractionState['hoverHandle'] = null;
         if (s.selectedIds.length === 1 && !lockedIds().has(s.selectedIds[0]!)) {
-          const box = pickBoxHandle(pose, s.selectedIds[0]!, world, s.view.zoom);
+          const mode = (s.handleMode ?? 'scale') as HandleMode;
+          const box = pickBoxHandle(pose, s.selectedIds[0]!, world, s.view.zoom, mode);
           if (box) hoverHandle = { instanceId: box.instanceId, kind: box.kind };
         }
         setState((st) =>

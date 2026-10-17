@@ -7,6 +7,7 @@ import { pickFiles, type PickedFile } from './pickFiles';
 import {
   defaultSheetOptions,
   extractGridCells,
+  partLetter,
   type ExtractedCell,
   type Rgba,
   type SheetExtractOptions,
@@ -94,12 +95,24 @@ export async function pickSpriteSheetFile(): Promise<PickedFile | null> {
 
 function cellName(baseName: string, cell: ExtractedCell): string {
   const n = cell.index + 1;
-  return `${baseName}_${String(n).padStart(2, '0')}_r${cell.row}c${cell.column}`;
+  const base = `${baseName}_${String(n).padStart(2, '0')}_r${cell.row}c${cell.column}`;
+  if (cell.partCount > 1) return `${base}_${partLetter(cell.partIndex)}`;
+  return base;
+}
+
+/** When a cell splits into multiple parts, nest them under rNcM so they stay grouped. */
+function cellFolder(baseFolder: string, cell: ExtractedCell): string {
+  const base = normalizeAssetFolder(baseFolder);
+  if (cell.partCount <= 1) return base;
+  const group = `r${cell.row}c${cell.column}`;
+  return normalizeAssetFolder(base ? `${base}/${group}` : group);
 }
 
 export interface SheetImportMeta {
-  /** Library folder path for every extracted sprite (empty = Unfiled). */
+  /** Optional default folder when a cell has no per-cell entry. */
   folder?: string;
+  /** Per-cell library folder keyed by `ExtractedCell.index`. */
+  folderByCellIndex?: Record<number, string>;
 }
 
 /** Extract grid cells and register each non-empty slice as a project asset. Original sheet is not modified. */
@@ -108,14 +121,26 @@ export function importExtractedCells(
   options: SheetExtractOptions = defaultSheetOptions(),
   meta: SheetImportMeta = {},
 ): SheetImportResult {
-  const folder = normalizeAssetFolder(meta.folder ?? '');
-  if (folder) createAssetFolder(folder);
+  const defaultFolder = normalizeAssetFolder(meta.folder ?? '');
+  const byIndex = meta.folderByCellIndex ?? {};
+  const ensured = new Set<string>();
+  const ensureFolder = (f: string) => {
+    if (!f || ensured.has(f)) return;
+    createAssetFolder(f);
+    ensured.add(f);
+  };
+  if (defaultFolder) ensureFolder(defaultFolder);
+
   const { background, cells } = extractGridCells(sheet.pixels, sheet.width, sheet.height, options);
   const assets: SpriteAsset[] = [];
   let skippedEmpty = 0;
+  const seenEmptyIndex = new Set<number>();
   for (const cell of cells) {
     if (cell.empty) {
-      skippedEmpty++;
+      if (!seenEmptyIndex.has(cell.index)) {
+        skippedEmpty++;
+        seenEmptyIndex.add(cell.index);
+      }
       continue;
     }
     const png = encodeRgbaPng(cell.pixels, cell.width, cell.height);
@@ -124,7 +149,11 @@ export function importExtractedCells(
     const imagePath = uniqueImagePath(name);
     blobStore.put(imagePath, png, 'image/png');
     const asset = createSpriteAsset({ name, imagePath, width: cell.width, height: cell.height });
-    if (folder) asset.folder = folder;
+    const folder = cellFolder(byIndex[cell.index] ?? defaultFolder, cell);
+    if (folder) {
+      ensureFolder(folder);
+      asset.folder = folder;
+    }
     addProjectAsset(asset);
     assets.push(asset);
   }
@@ -132,4 +161,4 @@ export function importExtractedCells(
 }
 
 export type { SheetExtractOptions, ExtractedCell, Rgba };
-export { defaultSheetOptions, extractGridCells, sampleBackgroundFromCorners } from './spriteSheetExtract';
+export { defaultSheetOptions, extractGridCells, partLetter, sampleBackgroundFromCorners } from './spriteSheetExtract';
