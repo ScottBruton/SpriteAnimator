@@ -1,0 +1,12 @@
+{
+  "name": "@elemental/animation-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pure, platform-independent transform math, rig evaluation and animation sampling for Elemental Sprite Studio. No React, no Skia.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "sideEffects": false,
+  "peerDependencies": {
+    "@elemental/asset-schema": "*"
+  }
+}

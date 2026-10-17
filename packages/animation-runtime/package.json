@@ -1,0 +1,16 @@
+{
+  "name": "@elemental/animation-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone React Native / React Native Web runtime that loads Elemental Sprite Studio assembly packages and renders them with React Native Skia. Does not depend on the editor.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "sideEffects": false,
+  "peerDependencies": {
+    "@elemental/animation-core": "*",
+    "@elemental/asset-schema": "*",
+    "@shopify/react-native-skia": ">=2.0.0",
+    "react": ">=19",
+    "react-native": ">=0.78"
+  }
+}

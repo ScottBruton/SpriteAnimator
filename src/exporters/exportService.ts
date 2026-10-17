@@ -1,0 +1,98 @@
+import type { AssemblyPackage, Project, SpriteAsset, UnitAssembly } from '@elemental/asset-schema';
+import { createId, createProject, slugify } from '@elemental/asset-schema';
+import { loadAssemblyPackage } from '@elemental/animation-runtime';
+import { blobStore } from '@/state/blobStore';
+import { useEditorStore } from '@/state/editorStore';
+import { getAssetLookup, useProjectStore } from '@/state/projectStore';
+import { utf8Decode, utf8Encode } from '@/utils/base64';
+import { buildAssemblyExport, type BuiltExport, type ExportFile } from './buildPackage';
+import { deliverFile, filesToZip, unzip } from './zip';
+
+export function buildCurrentAssemblyExport(): BuiltExport | null {
+  const { project } = useProjectStore.getState();
+  const assembly = project.assemblies.find((a) => a.id === project.activeAssemblyId);
+  if (!assembly) return null;
+  return buildAssemblyExport(project, assembly, getAssetLookup(), (p) => blobStore.get(p)?.bytes);
+}
+
+export async function exportAssemblyZip(): Promise<{ message: string; warnings: string[] } | null> {
+  const built = buildCurrentAssemblyExport();
+  if (!built) return null;
+  const zip = await filesToZip(built.files);
+  const message = await deliverFile(`${slugify(built.manifest.name) || 'assembly'}.zip`, zip, 'application/zip');
+  return { message, warnings: built.warnings };
+}
+
+export async function exportAssemblyJson(): Promise<{ message: string; warnings: string[] } | null> {
+  const built = buildCurrentAssemblyExport();
+  if (!built) return null;
+  const message = await deliverFile(`${slugify(built.manifest.name) || 'assembly'}.json`, utf8Encode(JSON.stringify(built.pkg, null, 2)), 'application/json');
+  return { message, warnings: built.warnings };
+}
+
+/** Whole project (document + every blob) as a ZIP backup. */
+export async function exportProjectBackup(): Promise<string> {
+  const { project, globalAssets } = useProjectStore.getState();
+  const files: ExportFile[] = [
+    { path: 'project.json', data: JSON.stringify(project, null, 2) },
+    { path: 'global-assets.json', data: JSON.stringify(globalAssets, null, 2) },
+  ];
+  const paths = new Set([...project.assets.map((a) => a.imagePath), ...globalAssets.map((a) => a.imagePath), ...project.audio.map((a) => a.audioPath)]);
+  for (const p of paths) {
+    const b = blobStore.get(p);
+    if (b) files.push({ path: `blobs/${p}`, data: b.bytes });
+  }
+  const zip = await filesToZip(files);
+  return deliverFile(`${slugify(project.name) || 'project'}-backup.zip`, zip, 'application/zip');
+}
+
+/**
+ * Import an exported package (ZIP or bare assembly.json) into the current project as a new
+ * assembly. Image bytes are keyed by their package path prefixed with the assembly slug to avoid
+ * clobbering existing project assets.
+ */
+export async function importAssemblyPackage(file: { name: string; bytes: Uint8Array }): Promise<{ assemblyId: string; warnings: string[] }> {
+  const warnings: string[] = [];
+  let pkg: AssemblyPackage;
+  const images = new Map<string, Uint8Array>();
+  if (file.name.toLowerCase().endsWith('.zip')) {
+    const entries = await unzip(file.bytes);
+    const asm = entries.find((e) => e.path === 'assembly.json' || e.path.endsWith('/assembly.json'));
+    if (!asm) throw new Error('ZIP does not contain assembly.json');
+    const root = asm.path.slice(0, asm.path.length - 'assembly.json'.length);
+    pkg = loadAssemblyPackage(utf8Decode(asm.bytes));
+    for (const e of entries) if (e.path.startsWith(root) && e.path !== asm.path) images.set(e.path.slice(root.length), e.bytes);
+  } else {
+    pkg = loadAssemblyPackage(utf8Decode(file.bytes));
+    warnings.push('Bare JSON import: image files must be re-imported manually (ZIP exports include them).');
+  }
+  const prefix = `imported/${slugify(pkg.assembly.name) || 'assembly'}-${createId('').slice(-6)}/`;
+  const assets: SpriteAsset[] = pkg.assets.map((a) => {
+    const key = prefix + a.imagePath;
+    const bytes = images.get(a.imagePath);
+    if (bytes) blobStore.put(key, bytes, 'image/png');
+    else if (images.size) warnings.push(`Missing image ${a.imagePath}`);
+    return { ...a, imagePath: key };
+  });
+  const assembly: UnitAssembly = { ...pkg.assembly, id: createId('asm') };
+  useProjectStore.getState().commit('Import assembly', (d) => {
+    const existing = new Set(d.assets.map((a) => a.id));
+    for (const a of assets) if (!existing.has(a.id)) d.assets.push(a);
+    d.assemblies.push(assembly);
+    d.activeAssemblyId = assembly.id;
+  });
+  useEditorStore.getState().select([]);
+  useEditorStore.getState().setActiveAction(assembly.actions[0]?.id ?? null);
+  return { assemblyId: assembly.id, warnings };
+}
+
+/** Restore a project backup created by `exportProjectBackup`. */
+export async function importProjectBackup(bytes: Uint8Array): Promise<Project> {
+  const entries = await unzip(bytes);
+  const doc = entries.find((e) => e.path === 'project.json');
+  if (!doc) throw new Error('Not a project backup (project.json missing)');
+  const project = { ...createProject('restored'), ...(JSON.parse(utf8Decode(doc.bytes)) as Project) };
+  for (const e of entries) if (e.path.startsWith('blobs/')) blobStore.put(e.path.slice('blobs/'.length), e.bytes, e.path.endsWith('.png') ? 'image/png' : 'application/octet-stream');
+  useProjectStore.getState().setProject(project, { dirty: true });
+  return project;
+}
