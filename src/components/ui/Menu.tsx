@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { colors, font, spacing } from '@/theme/tokens';
+import { applyDomTitle, mergeTitleRef } from '@/utils/domTitle';
 
 export interface MenuItem {
   label: string;
   shortcut?: string;
+  /** Hover tooltip (browser `title` / accessibility hint). */
+  tooltip?: string;
   onPress?: () => void;
   disabled?: boolean;
   checked?: boolean;
@@ -13,6 +16,8 @@ export interface MenuItem {
 
 export interface MenuProps {
   label: string;
+  /** Tooltip for the top-level menu trigger (File, Edit, …). */
+  tooltip?: string;
   items: MenuItem[];
 }
 
@@ -25,18 +30,25 @@ function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () => void }
         ) : (
           <Pressable
             key={i}
+            ref={mergeTitleRef(item.tooltip ?? item.label)}
             disabled={item.disabled}
+            accessibilityHint={item.tooltip}
+            accessibilityLabel={item.label}
             onPress={() => {
               onClose();
               item.onPress?.();
             }}
             style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.item, hovered && !item.disabled && styles.itemHover, item.disabled && styles.itemDisabled]}
           >
-            <Text style={styles.itemText}>
+            <Text style={styles.itemText} pointerEvents="none">
               {item.checked ? '✓ ' : '   '}
               {item.label}
             </Text>
-            {item.shortcut ? <Text style={styles.shortcut}>{item.shortcut}</Text> : null}
+            {item.shortcut ? (
+              <Text style={styles.shortcut} pointerEvents="none">
+                {item.shortcut}
+              </Text>
+            ) : null}
           </Pressable>
         ),
       )}
@@ -48,7 +60,7 @@ function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () => void }
  * Menu-bar dropdown. Uses a Modal so it overlays everything on web and native; position is
  * measured from the trigger.
  */
-export function Menu({ label, items }: MenuProps) {
+export function Menu({ label, tooltip, items }: MenuProps) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState({ x: 0, y: 0 });
   const triggerRef = React.useRef<React.ComponentRef<typeof View>>(null);
@@ -62,8 +74,19 @@ export function Menu({ label, items }: MenuProps) {
 
   return (
     <>
-      <Pressable ref={triggerRef} onPress={openMenu} style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.trigger, (open || hovered) && styles.triggerOpen]}>
-        <Text style={styles.triggerText}>{label}</Text>
+      <Pressable
+        ref={(node) => {
+          (triggerRef as React.MutableRefObject<typeof node>).current = node;
+          applyDomTitle(node, tooltip);
+        }}
+        onPress={openMenu}
+        accessibilityHint={tooltip}
+        accessibilityLabel={label}
+        style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.trigger, (open || hovered) && styles.triggerOpen]}
+      >
+        <Text style={styles.triggerText} pointerEvents="none">
+          {label}
+        </Text>
       </Pressable>
       <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
         <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />

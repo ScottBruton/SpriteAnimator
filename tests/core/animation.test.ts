@@ -75,10 +75,11 @@ function makeRig(): { assembly: UnitAssembly; assets: Map<string, SpriteAsset> }
     height: 200,
     pivot: { x: 50, y: 100 },
     attachments: [{ id: 'shoulder', name: 'shoulder', position: { x: 90, y: 40 }, rotation: 0 }],
+    projectilePoints: [],
     tags: [],
     folder: '',
   };
-  const arm: SpriteAsset = { ...body, id: 'arm', name: 'arm', width: 20, height: 80, pivot: { x: 10, y: 5 }, attachments: [] };
+  const arm: SpriteAsset = { ...body, id: 'arm', name: 'arm', width: 20, height: 80, pivot: { x: 10, y: 5 }, attachments: [], projectilePoints: [] };
   const assembly = createAssembly('test');
   const layer = assembly.layers[0]!;
   const b = createSpriteInstance({ asset: body, layerId: layer.id, position: { x: 0, y: 0 } });

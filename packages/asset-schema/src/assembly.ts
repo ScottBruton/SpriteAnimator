@@ -70,6 +70,10 @@ export const BehaviorMappingSchema = z.object({
 });
 export type BehaviorMapping = z.infer<typeof BehaviorMappingSchema>;
 
+/** Gameplay/content category used when creating assemblies from templates. */
+export const AssemblyCategorySchema = z.enum(['unit', 'structure', 'resource', 'terrain']);
+export type AssemblyCategory = z.infer<typeof AssemblyCategorySchema>;
+
 /**
  * A complete game unit: shared logical rig, direction overrides, actions and behaviours.
  * Assets are referenced by id and are resolved from the owning project (editor) or the package
@@ -79,6 +83,10 @@ export const UnitAssemblySchema = z.object({
   id: IdSchema,
   name: z.string().min(1),
   schemaVersion: z.string().default(SCHEMA_VERSION),
+  /** Content type (unit / structure / resource / terrain). */
+  category: AssemblyCategorySchema.default('unit'),
+  /** Project explorer path (e.g. `Units/Frost Snowman`). Empty = unfiled. */
+  folder: z.string().default(''),
   /** Back-to-front render order. */
   layers: z.array(LayerSchema),
   sprites: z.array(SpriteInstanceSchema),

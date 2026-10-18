@@ -1,11 +1,18 @@
 import type { AssemblyPackage, Project, SpriteAsset, UnitAssembly } from '@elemental/asset-schema';
-import { createId, createProject, slugify } from '@elemental/asset-schema';
+import { createId, migrateDocument, ProjectSchema, slugify } from '@elemental/asset-schema';
 import { loadAssemblyPackage } from '@elemental/animation-runtime';
 import { blobStore } from '@/state/blobStore';
 import { useEditorStore } from '@/state/editorStore';
 import { getAssetLookup, useProjectStore } from '@/state/projectStore';
 import { utf8Decode, utf8Encode } from '@/utils/base64';
 import { buildAssemblyExport, type BuiltExport, type ExportFile } from './buildPackage';
+import {
+  buildV2UnitPack,
+  requiredVariantsFor,
+  type Faction,
+  type UnitKind,
+  type V2VariantSource,
+} from './v2UnitPack';
 import { deliverFile, filesToZip, unzip } from './zip';
 
 export function buildCurrentAssemblyExport(): BuiltExport | null {
@@ -30,8 +37,37 @@ export async function exportAssemblyJson(): Promise<{ message: string; warnings:
   return { message, warnings: built.warnings };
 }
 
-/** Whole project (document + every blob) as a ZIP backup. */
-export async function exportProjectBackup(): Promise<string> {
+export interface V2ExportRequest {
+  kind: UnitKind;
+  faction: Faction;
+  /** variantId → assemblyId. Missing required keys produce warnings. */
+  variantAssemblyIds: Record<string, string>;
+}
+
+/** Elemental game drop-in pack for assets/v2/units/ (+ control.js). */
+export async function exportV2UnitPackZip(req: V2ExportRequest): Promise<{ message: string; warnings: string[] } | null> {
+  const { project } = useProjectStore.getState();
+  const variants: V2VariantSource[] = [];
+  for (const [variantId, assemblyId] of Object.entries(req.variantAssemblyIds)) {
+    const assembly = project.assemblies.find((a) => a.id === assemblyId);
+    if (!assembly) throw new Error(`Assembly not found for variant "${variantId}"`);
+    variants.push({ variantId, assembly });
+  }
+  if (variants.length === 0) {
+    const assembly = project.assemblies.find((a) => a.id === project.activeAssemblyId) ?? project.assemblies[0];
+    if (!assembly) return null;
+    const fallback = requiredVariantsFor(req.kind, req.faction)[0] ?? 'equipped';
+    variants.push({ variantId: fallback, assembly });
+  }
+  const built = buildV2UnitPack(project, { kind: req.kind, faction: req.faction, variants }, getAssetLookup(), (p) => blobStore.get(p)?.bytes);
+  const zip = await filesToZip(built.files);
+  const base = slugify(`${req.kind}-${req.faction}`) || 'unit-pack';
+  const message = await deliverFile(`${base}-v2-unit-pack.zip`, zip, 'application/zip');
+  return { message: `${message} — drop into assets/v2/units/ then run sync scripts`, warnings: built.warnings };
+}
+
+/** Whole project (document + every blob) as a ZIP for Save As / backup. */
+export async function exportProjectBackup(filenameBase?: string): Promise<string> {
   const { project, globalAssets } = useProjectStore.getState();
   const files: ExportFile[] = [
     { path: 'project.json', data: JSON.stringify(project, null, 2) },
@@ -43,7 +79,8 @@ export async function exportProjectBackup(): Promise<string> {
     if (b) files.push({ path: `blobs/${p}`, data: b.bytes });
   }
   const zip = await filesToZip(files);
-  return deliverFile(`${slugify(project.name) || 'project'}-backup.zip`, zip, 'application/zip');
+  const base = slugify(filenameBase?.trim() || project.name) || 'project';
+  return deliverFile(`${base}.ess.zip`, zip, 'application/zip');
 }
 
 /**
@@ -86,13 +123,31 @@ export async function importAssemblyPackage(file: { name: string; bytes: Uint8Ar
   return { assemblyId: assembly.id, warnings };
 }
 
-/** Restore a project backup created by `exportProjectBackup`. */
+/** Restore a project pack created by Save As / Backup (`project.json` + `blobs/`). */
 export async function importProjectBackup(bytes: Uint8Array): Promise<Project> {
   const entries = await unzip(bytes);
-  const doc = entries.find((e) => e.path === 'project.json');
-  if (!doc) throw new Error('Not a project backup (project.json missing)');
-  const project = { ...createProject('restored'), ...(JSON.parse(utf8Decode(doc.bytes)) as Project) };
-  for (const e of entries) if (e.path.startsWith('blobs/')) blobStore.put(e.path.slice('blobs/'.length), e.bytes, e.path.endsWith('.png') ? 'image/png' : 'application/octet-stream');
+  const doc = entries.find((e) => e.path === 'project.json' || e.path.endsWith('/project.json'));
+  if (!doc) throw new Error('Not a project file (project.json missing)');
+  const parsed = ProjectSchema.safeParse(migrateDocument(JSON.parse(utf8Decode(doc.bytes))));
+  if (!parsed.success) throw new Error(`Invalid project.json: ${parsed.error.issues[0]?.message ?? 'parse failed'}`);
+  const project = parsed.data;
+  for (const e of entries) {
+    if (!e.path.includes('blobs/')) continue;
+    const key = e.path.replace(/^.*blobs\//, '');
+    if (!key) continue;
+    blobStore.put(key, e.bytes, key.endsWith('.png') ? 'image/png' : 'application/octet-stream');
+  }
+  const globalEntry = entries.find((e) => e.path === 'global-assets.json' || e.path.endsWith('/global-assets.json'));
+  if (globalEntry) {
+    try {
+      const globals = JSON.parse(utf8Decode(globalEntry.bytes)) as SpriteAsset[];
+      if (Array.isArray(globals)) useProjectStore.getState().setGlobalAssets(globals);
+    } catch {
+      /* ignore corrupt global list */
+    }
+  }
   useProjectStore.getState().setProject(project, { dirty: true });
+  useEditorStore.getState().select([]);
+  useEditorStore.getState().setActiveAction(project.assemblies.find((a) => a.id === project.activeAssemblyId)?.actions[0]?.id ?? project.assemblies[0]?.actions[0]?.id ?? null);
   return project;
 }

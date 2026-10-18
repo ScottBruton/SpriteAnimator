@@ -2,9 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Canvas, Circle, Group, Image as SkiaImage, Line, Path, Rect, Skia } from '@shopify/react-native-skia';
 import { GestureDetector, usePanGesture, useTapGesture, useSimultaneousGestures } from 'react-native-gesture-handler';
-import type { AttachmentPoint, Vector2 } from '@elemental/asset-schema';
+import type { AttachmentPoint, ProjectilePoint, Vector2 } from '@elemental/asset-schema';
 import { sharedImageRegistry, useImageRegistry } from '@elemental/animation-runtime';
-import { addAttachment, duplicateAttachment, removeAttachment, setAssetOrbitHandle, setAssetPivot, updateAttachment } from '@/engine/commands';
+import {
+  addAttachment,
+  addProjectilePoint,
+  duplicateAttachment,
+  duplicateProjectilePoint,
+  removeAttachment,
+  removeProjectilePoint,
+  setAssetOrbitHandle,
+  setAssetPivot,
+  updateAttachment,
+  updateProjectilePoint,
+} from '@/engine/commands';
 import { useEditorStore } from '@/state/editorStore';
 import { useProjectStore } from '@/state/projectStore';
 import { colors, font, spacing } from '@/theme/tokens';
@@ -12,7 +23,14 @@ import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Checkbox, NumberField, Row, SectionTitle, TextField } from '../ui/Fields';
 
-type DragTarget = { kind: 'pivot' } | { kind: 'orbit' } | { kind: 'attachment'; id: string } | { kind: 'attachmentRot'; id: string } | null;
+type DragTarget =
+  | { kind: 'pivot' }
+  | { kind: 'orbit' }
+  | { kind: 'attachment'; id: string }
+  | { kind: 'attachmentRot'; id: string }
+  | { kind: 'projectile'; id: string }
+  | { kind: 'projectileAngle'; id: string }
+  | null;
 
 const PIVOT_PRESETS: { label: string; fx: number; fy: number }[] = [
   { label: '↖', fx: 0, fy: 0 },
@@ -55,6 +73,7 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
   const registry = useImageRegistry(sharedImageRegistry);
   const image = registry.get(asset.imagePath) ?? null;
   const [selectedAtt, setSelectedAtt] = useState<string | null>(asset.attachments[0]?.id ?? null);
+  const [selectedProj, setSelectedProj] = useState<string | null>(asset.projectilePoints?.[0]?.id ?? null);
   const [snapPixels, setSnapPixels] = useState(true);
   const [showGrid, setShowGrid] = useState(false);
   const [view, setView] = useState({ zoom: 1, panX: 0, panY: 0 });
@@ -82,10 +101,24 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
   const toScreen = (p: Vector2) => ({ x: p.x * view.zoom + view.panX, y: p.y * view.zoom + view.panY });
   const snap = (p: Vector2): Vector2 => (snapPixels ? { x: Math.round(p.x * 2) / 2, y: Math.round(p.y * 2) / 2 } : p);
 
-  const dragRef = useRef<{ target: DragTarget; mode: 'pan' | 'edit'; startPan: { x: number; y: number }; attStart?: AttachmentPoint } | null>(null);
+  const projectiles = asset.projectilePoints ?? [];
+  const dragRef = useRef<{
+    target: DragTarget;
+    mode: 'pan' | 'edit';
+    startPan: { x: number; y: number };
+    attStart?: AttachmentPoint;
+    projStart?: ProjectilePoint;
+  } | null>(null);
   const containerRef = useRef<React.ComponentRef<typeof View>>(null);
   const hitTest = (sx: number, sy: number): DragTarget => {
     const r = 10;
+    for (const pt of [...projectiles].reverse()) {
+      const s = toScreen(pt.position);
+      const ang = ((pt.angle ?? 0) * Math.PI) / 180;
+      const aim = { x: s.x + Math.cos(ang) * 28, y: s.y + Math.sin(ang) * 28 };
+      if (Math.hypot(aim.x - sx, aim.y - sy) < 7 && pt.id === selectedProj) return { kind: 'projectileAngle', id: pt.id };
+      if (Math.hypot(s.x - sx, s.y - sy) < r) return { kind: 'projectile', id: pt.id };
+    }
     for (const att of [...asset.attachments].reverse()) {
       const s = toScreen(att.position);
       const rotHandle = { x: s.x + Math.cos((att.rotation * Math.PI) / 180) * 24, y: s.y + Math.sin((att.rotation * Math.PI) / 180) * 24 };
@@ -108,15 +141,33 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
     onBegin: (e) => {
       const target = hitTest(e.x, e.y);
       if (target?.kind === 'attachment' || target?.kind === 'attachmentRot') setSelectedAtt(target.id);
+      if (target?.kind === 'projectile' || target?.kind === 'projectileAngle') setSelectedProj(target.id);
       const attStart =
         target && (target.kind === 'attachment' || target.kind === 'attachmentRot')
           ? asset.attachments.find((a) => a.id === target.id)
           : undefined;
-      dragRef.current = { target, mode: target ? 'edit' : 'pan', startPan: { x: view.panX, y: view.panY }, attStart: attStart ? { ...attStart, position: { ...attStart.position } } : undefined };
-      if (target)
-        useProjectStore.getState().beginTransaction(
-          target.kind === 'pivot' ? 'Set pivot' : target.kind === 'orbit' ? 'Move 3D handle' : 'Edit attachment',
-        );
+      const projStart =
+        target && (target.kind === 'projectile' || target.kind === 'projectileAngle')
+          ? projectiles.find((a) => a.id === target.id)
+          : undefined;
+      dragRef.current = {
+        target,
+        mode: target ? 'edit' : 'pan',
+        startPan: { x: view.panX, y: view.panY },
+        attStart: attStart ? { ...attStart, position: { ...attStart.position } } : undefined,
+        projStart: projStart ? { ...projStart, position: { ...projStart.position } } : undefined,
+      };
+      if (target) {
+        const label =
+          target.kind === 'pivot'
+            ? 'Set pivot'
+            : target.kind === 'orbit'
+              ? 'Move 3D handle'
+              : target.kind === 'projectile' || target.kind === 'projectileAngle'
+                ? 'Edit projectile point'
+                : 'Edit attachment';
+        useProjectStore.getState().beginTransaction(label);
+      }
     },
     onUpdate: (e) => {
       const d = dragRef.current;
@@ -135,6 +186,13 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
         let deg = (Math.atan2(raw.y - c.y, raw.x - c.x) * 180) / Math.PI;
         if (snapPixels) deg = Math.round(deg / 5) * 5;
         updateAttachment(asset.id, d.target.id, { rotation: deg }, true);
+      } else if (d.target?.kind === 'projectile') updateProjectilePoint(asset.id, d.target.id, { position: p }, true);
+      else if (d.target?.kind === 'projectileAngle' && d.projStart) {
+        const c = d.projStart.position;
+        const raw = toImage(e.x, e.y);
+        let deg = (Math.atan2(raw.y - c.y, raw.x - c.x) * 180) / Math.PI;
+        if (snapPixels) deg = Math.round(deg / 5) * 5;
+        updateProjectilePoint(asset.id, d.target.id, { angle: deg }, true);
       }
     },
     onFinalize: () => {
@@ -197,6 +255,7 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
   }, [canvasSize]);
 
   const att = asset.attachments.find((a) => a.id === selectedAtt);
+  const proj = projectiles.find((a) => a.id === selectedProj);
   const pivotS = toScreen(asset.pivot);
   const orbitS = asset.orbitHandle ? toScreen(asset.orbitHandle) : null;
   const setPivotPreset = (fx: number, fy: number) => setAssetPivot(asset.id, { x: Math.round(asset.width * fx * 2) / 2, y: Math.round(asset.height * fy * 2) / 2 });
@@ -225,6 +284,19 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
                   </Group>
                 );
               })}
+              {projectiles.map((pt) => {
+                const s = toScreen(pt.position);
+                const sel = pt.id === selectedProj;
+                const rad = ((pt.angle ?? 0) * Math.PI) / 180;
+                return (
+                  <Group key={pt.id}>
+                    <Line p1={s} p2={{ x: s.x + Math.cos(rad) * 28, y: s.y + Math.sin(rad) * 28 }} color={colors.projectile} strokeWidth={sel ? 2 : 1.5} />
+                    {sel ? <Circle cx={s.x + Math.cos(rad) * 28} cy={s.y + Math.sin(rad) * 28} r={4} color={colors.projectile} /> : null}
+                    <Circle cx={s.x} cy={s.y} r={sel ? 7 : 5} color={colors.projectile} style="stroke" strokeWidth={2} />
+                    <Circle cx={s.x} cy={s.y} r={2} color={colors.projectile} />
+                  </Group>
+                );
+              })}
               <Group>
                 <Line p1={{ x: pivotS.x - 12, y: pivotS.y }} p2={{ x: pivotS.x + 12, y: pivotS.y }} color={colors.pivot} strokeWidth={1.5} />
                 <Line p1={{ x: pivotS.x, y: pivotS.y - 12 }} p2={{ x: pivotS.x, y: pivotS.y + 12 }} color={colors.pivot} strokeWidth={1.5} />
@@ -244,6 +316,14 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
               return (
                 <Text key={a.id} style={[styles.label, { left: s.x + 9, top: s.y - 16 }]} pointerEvents="none">
                   {a.name}
+                </Text>
+              );
+            })}
+            {projectiles.map((pt) => {
+              const s = toScreen(pt.position);
+              return (
+                <Text key={pt.id} style={[styles.label, { left: s.x + 9, top: s.y - 16, color: colors.projectileLabel }]} pointerEvents="none">
+                  {pt.name}
                 </Text>
               );
             })}
@@ -382,6 +462,67 @@ function SpriteEditorBody({ assetId, width, height }: { assetId: string; width: 
         <Text style={styles.hint}>
           Arm: pink pivot at shoulder. Body: green attachment at shoulder socket, then link child pivot → parent attachment.
         </Text>
+
+        <SectionTitle>Projectile points — orange (muzzle / spawn)</SectionTitle>
+        <Text style={styles.hint}>
+          Where projectiles should fire from on this sprite. Saved in asset metadata for the game runtime. Drag the orange point; drag the tip to set fire angle.
+        </Text>
+        <Row>
+          <Button
+            icon="+"
+            label="Add"
+            small
+            onPress={() => {
+              let n = projectiles.length + 1;
+              while (projectiles.some((a) => a.name === `muzzle_${n}`)) n++;
+              setSelectedProj(addProjectilePoint(asset.id, `muzzle_${n}`, { x: Math.round(asset.width * 0.75), y: Math.round(asset.height / 2) }));
+            }}
+          />
+          <Button icon="⧉" label="Duplicate" small disabled={!proj} onPress={() => proj && duplicateProjectilePoint(asset.id, proj.id)} />
+          <Button
+            icon="🗑"
+            label="Remove"
+            small
+            danger
+            disabled={!proj}
+            onPress={() => {
+              if (!proj) return;
+              removeProjectilePoint(asset.id, proj.id);
+              setSelectedProj(projectiles.find((a) => a.id !== proj.id)?.id ?? null);
+            }}
+          />
+        </Row>
+        <View style={styles.list}>
+          {projectiles.length === 0 ? <Text style={styles.hint}>No projectile points. Add one on a weapon tip or cast hand.</Text> : null}
+          {projectiles.map((a) => (
+            <Pressable key={a.id} onPress={() => setSelectedProj(a.id)} style={[styles.listRow, a.id === selectedProj && styles.listRowSel]}>
+              <View style={[styles.dot, styles.dotProj]} />
+              <Text style={styles.listText} numberOfLines={1}>
+                {a.name}
+              </Text>
+              <Text style={styles.listMeta}>
+                {Math.round(a.position.x)},{Math.round(a.position.y)} {Math.round(a.angle ?? 0)}°
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {proj ? (
+          <>
+            <SectionTitle>Selected projectile point</SectionTitle>
+            <TextField label="Name" value={proj.name} onChange={(name) => updateProjectilePoint(asset.id, proj.id, { name })} />
+            <Row>
+              <NumberField label="X" value={proj.position.x} step={0.5} onChange={(x) => updateProjectilePoint(asset.id, proj.id, { position: { ...proj.position, x } })} width={90} />
+              <NumberField label="Y" value={proj.position.y} step={0.5} onChange={(y) => updateProjectilePoint(asset.id, proj.id, { position: { ...proj.position, y } })} width={90} />
+            </Row>
+            <NumberField label="Fire angle" value={proj.angle ?? 0} suffix="°" onChange={(angle) => updateProjectilePoint(asset.id, proj.id, { angle })} width={90} />
+            <TextField
+              label="Tags"
+              value={(proj.tags ?? []).join(', ')}
+              placeholder="e.g. primary, secondary"
+              onChange={(v) => updateProjectilePoint(asset.id, proj.id, { tags: v.split(',').map((s) => s.trim()).filter(Boolean) })}
+            />
+          </>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -401,6 +542,7 @@ const styles = StyleSheet.create({
   listRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: spacing.md, height: 24 },
   listRowSel: { backgroundColor: colors.accentSoft },
   dot: { width: 8, height: 8, borderRadius: 4, borderWidth: 2, borderColor: colors.attachment },
+  dotProj: { borderColor: colors.projectile, backgroundColor: 'transparent' },
   listText: { color: colors.text, fontSize: font.sm, flex: 1 },
   listMeta: { color: colors.textDim, fontSize: font.xs, fontFamily: font.mono },
   hint: { color: colors.textDim, fontSize: font.xs, lineHeight: 15, marginTop: spacing.sm },

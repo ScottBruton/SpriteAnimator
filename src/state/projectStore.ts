@@ -14,6 +14,8 @@ interface ProjectState {
   project: Project;
   /** Global library assets (shared across projects). */
   globalAssets: SpriteAsset[];
+  /** Display name of the linked on-disk project folder (null = not linked). */
+  workspaceFolderName: string | null;
   past: HistoryEntry[];
   future: HistoryEntry[];
   dirty: boolean;
@@ -21,7 +23,8 @@ interface ProjectState {
   /** Non-null while a drag/transient edit is in progress. */
   transaction: { label: string; before: Project } | null;
 
-  setProject: (project: Project, opts?: { dirty?: boolean }) => void;
+  setProject: (project: Project, opts?: { dirty?: boolean; workspaceFolderName?: string | null }) => void;
+  setWorkspaceFolderName: (name: string | null) => void;
   setGlobalAssets: (assets: SpriteAsset[]) => void;
   /** Undoable edit. */
   commit: (label: string, recipe: ProjectRecipe) => void;
@@ -40,6 +43,7 @@ const MAX_HISTORY = 200;
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: createProject('Untitled'),
   globalAssets: [],
+  workspaceFolderName: null,
   past: [],
   future: [],
   dirty: false,
@@ -47,7 +51,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   transaction: null,
 
   setProject: (project, opts) =>
-    set({ project, past: [], future: [], dirty: opts?.dirty ?? false, transaction: null, lastSavedAt: opts?.dirty ? null : Date.now() }),
+    set((s) => ({
+      project,
+      past: [],
+      future: [],
+      dirty: opts?.dirty ?? false,
+      transaction: null,
+      lastSavedAt: opts?.dirty ? null : Date.now(),
+      workspaceFolderName: opts?.workspaceFolderName !== undefined ? opts.workspaceFolderName : s.workspaceFolderName,
+    })),
+
+  setWorkspaceFolderName: (workspaceFolderName) => set({ workspaceFolderName }),
 
   setGlobalAssets: (assets) => set({ globalAssets: assets }),
 

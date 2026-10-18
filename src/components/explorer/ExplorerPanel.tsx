@@ -1,19 +1,56 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import type { SpriteInstance } from '@elemental/asset-schema';
-import { addAction, deleteAction, duplicateAction, patchAction, renameAssembly, renameInstance, renameProject } from '@/engine/commands';
+import type { SpriteInstance, UnitAssembly } from '@elemental/asset-schema';
+import {
+  addAction,
+  deleteAction,
+  deleteAssembly,
+  duplicateAction,
+  ensureEntityArtFolders,
+  patchAction,
+  renameAssembly,
+  renameInstance,
+  renameProject,
+  setActiveAssembly,
+} from '@/engine/commands';
+import { blobStore } from '@/state/blobStore';
 import { useEditorStore } from '@/state/editorStore';
 import { useActiveAssembly, useProjectStore } from '@/state/projectStore';
+import { deleteCurrentProjectCompletely } from '@/storage/projectService';
 import { colors, font, spacing } from '@/theme/tokens';
 import { Button } from '../ui/Button';
+import { ConfirmDialog } from '../ui/Dialog';
 import { TextField } from '../ui/Fields';
 import { Panel } from '../ui/Panel';
 
 export function ExplorerPanel() {
   const project = useProjectStore((s) => s.project);
   const dirty = useProjectStore((s) => s.dirty);
+  const workspaceFolderName = useProjectStore((s) => s.workspaceFolderName);
   const assembly = useActiveAssembly();
   const openDialog = useEditorStore((s) => s.openDialog);
+  const setStatus = useEditorStore((s) => s.setStatus);
+  const [confirmProjectDelete, setConfirmProjectDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Backfill 000…315 asset folders for entities created before that existed.
+  useEffect(() => {
+    if (assembly) ensureEntityArtFolders(assembly);
+  }, [assembly?.id, assembly?.folder, assembly?.category]);
+
+  const wipeProject = async () => {
+    setBusy(true);
+    try {
+      const msg = await deleteCurrentProjectCompletely();
+      setConfirmProjectDelete(false);
+      setStatus(msg, 'success');
+    } catch (e) {
+      setStatus(`Delete project failed: ${(e as Error).message}`, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <View style={styles.column}>
       <Panel title="Project" padded>
@@ -22,17 +59,146 @@ export function ExplorerPanel() {
           <Text style={styles.meta}>{dirty ? '● unsaved changes' : '✓ saved'}</Text>
           <Button label="Projects…" small onPress={() => openDialog('projects')} />
         </View>
+        {workspaceFolderName ? <Text style={styles.meta}>Folder · {workspaceFolderName}</Text> : null}
+        <Button label="Create new…" primary small onPress={() => openDialog('createEntity')} />
+        <Button
+          label="Delete entire project…"
+          small
+          danger
+          title="Permanently delete this project, its assets, and wipe the linked folder on disk"
+          onPress={() => setConfirmProjectDelete(true)}
+        />
       </Panel>
-      <Panel title="Assembly" padded>
+      <AssembliesSection />
+      <Panel title="Active" padded>
         {assembly ? <TextField value={assembly.name} onChange={renameAssembly} /> : null}
+        <Text style={styles.meta}>
+          {assembly?.category ?? 'unit'}
+          {assembly?.folder ? ` · ${assembly.folder}` : ''}
+        </Text>
         <Text style={styles.meta}>
           {assembly?.sprites.length ?? 0} sprites · {assembly?.layers.length ?? 0} layers · {assembly?.actions.length ?? 0} actions
         </Text>
+        {assembly ? <DeleteEntityButton assembly={assembly} /> : null}
       </Panel>
       <HierarchySection />
       <ActionsSection />
+
+      <ConfirmDialog
+        visible={confirmProjectDelete}
+        title="Delete entire project?"
+        message={`Permanently delete “${project.name}”?\n\nThis removes the project from local storage, all project sprites/audio, and — if linked — wipes the on-disk project folder contents (${workspaceFolderName ?? 'no folder linked'}).\n\nThis cannot be undone.`}
+        confirmLabel={busy ? 'Deleting…' : 'Delete project'}
+        danger
+        onCancel={() => !busy && setConfirmProjectDelete(false)}
+        onConfirm={() => {
+          if (!busy) void wipeProject();
+        }}
+      />
     </View>
   );
+}
+
+function DeleteEntityButton({ assembly }: { assembly: UnitAssembly }) {
+  const [confirm, setConfirm] = useState(false);
+  const setStatus = useEditorStore((s) => s.setStatus);
+  const kind = assembly.category ?? 'unit';
+  return (
+    <>
+      <Button
+        label={`Delete this ${kind}…`}
+        small
+        danger
+        title={`Delete ${assembly.name} and its art folders/assets`}
+        onPress={() => setConfirm(true)}
+      />
+      <ConfirmDialog
+        visible={confirm}
+        title={`Delete ${kind}?`}
+        message={`Delete “${assembly.name}” (${kind})?\n\nIts assembly and art under ${assembly.folder || '(no folder)'} will be removed. This cannot be undone.`}
+        confirmLabel="Delete"
+        danger
+        onCancel={() => setConfirm(false)}
+        onConfirm={() => {
+          const keys = deleteAssembly(assembly.id, { deleteArt: true });
+          for (const k of keys) blobStore.remove(k);
+          setConfirm(false);
+          setStatus(`Deleted ${kind} “${assembly.name}”`, 'success');
+        }}
+      />
+    </>
+  );
+}
+
+function AssembliesSection() {
+  const assemblies = useProjectStore((s) => s.project.assemblies);
+  const activeId = useProjectStore((s) => s.project.activeAssemblyId);
+  const setStatus = useEditorStore((s) => s.setStatus);
+  const grouped = useMemo(() => groupAssemblies(assemblies), [assemblies]);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const pending = confirmId ? assemblies.find((a) => a.id === confirmId) : null;
+
+  return (
+    <Panel title="Assemblies" flex={0.9} scroll padded={false}>
+      {assemblies.length === 0 ? <Text style={styles.empty}>No assemblies. Use Create new…</Text> : null}
+      {grouped.map((g) => (
+        <View key={g.folder || '__unfiled'}>
+          <Text style={styles.folderLabel}>{g.folder || 'Unfiled'}</Text>
+          {g.items.map((a) => {
+            const active = a.id === activeId;
+            return (
+              <View key={a.id} style={[styles.treeRow, active && styles.treeRowSel, { paddingLeft: 10 }]}>
+                <Pressable onPress={() => setActiveAssembly(a.id)} style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.treeText, active && styles.treeTextSel]} numberOfLines={1}>
+                    {a.name} <Text style={styles.meta}>{a.category ?? 'unit'}</Text>
+                  </Text>
+                </Pressable>
+                <Button
+                  icon="🗑"
+                  small
+                  danger
+                  title={`Delete ${a.category ?? 'unit'} “${a.name}”`}
+                  onPress={() => setConfirmId(a.id)}
+                />
+              </View>
+            );
+          })}
+        </View>
+      ))}
+      <ConfirmDialog
+        visible={!!pending}
+        title={`Delete ${pending?.category ?? 'unit'}?`}
+        message={
+          pending
+            ? `Delete “${pending.name}” and its art under ${pending.folder || '(no folder)'}? This cannot be undone.`
+            : ''
+        }
+        confirmLabel="Delete"
+        danger
+        onCancel={() => setConfirmId(null)}
+        onConfirm={() => {
+          if (!pending) return;
+          const keys = deleteAssembly(pending.id, { deleteArt: true });
+          for (const k of keys) blobStore.remove(k);
+          setStatus(`Deleted ${pending.category ?? 'unit'} “${pending.name}”`, 'success');
+          setConfirmId(null);
+        }}
+      />
+    </Panel>
+  );
+}
+
+function groupAssemblies(assemblies: UnitAssembly[]): { folder: string; items: UnitAssembly[] }[] {
+  const map = new Map<string, UnitAssembly[]>();
+  for (const a of assemblies) {
+    const f = (a.folder ?? '').trim();
+    const list = map.get(f) ?? [];
+    list.push(a);
+    map.set(f, list);
+  }
+  return [...map.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([folder, items]) => ({ folder, items: items.sort((x, y) => x.name.localeCompare(y.name)) }));
 }
 
 function HierarchySection() {
@@ -58,7 +224,6 @@ function HierarchySection() {
     }
   };
   walk(null, 0, new Set());
-  // Orphans (parent missing) appear as roots.
   for (const s of assembly.sprites) if (!rows.some((r) => r.inst.id === s.id)) rows.push({ inst: s, depth: 0, hasChildren: false });
 
   return (
@@ -95,7 +260,6 @@ function HierarchySection() {
             ) : (
               <Text style={[styles.treeText, sel && styles.treeTextSel]} numberOfLines={1}>
                 {inst.name}
-                {inst.parentAttachmentId ? <Text style={styles.meta}>  ⟵ {attachmentName(assembly, inst)}</Text> : null}
               </Text>
             )}
           </Pressable>
@@ -105,25 +269,17 @@ function HierarchySection() {
   );
 }
 
-function attachmentName(assembly: { sprites: SpriteInstance[] }, inst: SpriteInstance): string {
-  const parent = assembly.sprites.find((s) => s.id === inst.parentId);
-  const lookup = useProjectStore.getState();
-  const asset = [...lookup.project.assets, ...lookup.globalAssets].find((a) => a.id === parent?.assetId);
-  return asset?.attachments.find((a) => a.id === inst.parentAttachmentId)?.name ?? '?';
-}
-
 function ActionsSection() {
   const assembly = useActiveAssembly();
   const activeActionId = useEditorStore((s) => s.activeActionId);
   const setActiveAction = useEditorStore((s) => s.setActiveAction);
   const setWorkspace = useEditorStore((s) => s.setWorkspace);
-  const fps = useProjectStore((s) => s.project.settings.defaultFps);
   const [editing, setEditing] = useState<string | null>(null);
   if (!assembly) return null;
   return (
     <Panel
       title="Actions"
-      flex={1}
+      flex={0.7}
       scroll
       padded={false}
       actions={
@@ -132,10 +288,12 @@ function ActionsSection() {
           small
           title="New action"
           onPress={() => {
+            const fps = useProjectStore.getState().project.settings.defaultFps ?? 30;
             let n = 1;
             while (assembly.actions.some((a) => a.name === `action_${n}`)) n++;
             const id = addAction(`action_${n}`, fps);
             setActiveAction(id);
+            setWorkspace('animate');
             setEditing(id);
           }}
         />
@@ -167,7 +325,10 @@ function ActionsSection() {
               />
             ) : (
               <Text style={[styles.treeText, active && styles.treeTextSel, { flex: 1 }]} numberOfLines={1}>
-                {a.name} <Text style={styles.meta}>{a.duration.toFixed(2)}s{a.loop ? ' ↻' : ''}</Text>
+                {a.name}{' '}
+                <Text style={styles.meta}>
+                  {a.duration.toFixed(2)}s{a.loop ? ' ↻' : ''}
+                </Text>
               </Text>
             )}
             <Button icon="✎" small onPress={() => setEditing(a.id)} title="Rename" />
@@ -193,6 +354,15 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   meta: { color: colors.textDim, fontSize: font.xs },
   empty: { color: colors.textDim, fontSize: font.sm, padding: spacing.md },
+  folderLabel: {
+    color: colors.textDim,
+    fontSize: font.xs,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 2,
+  },
   treeRow: { flexDirection: 'row', alignItems: 'center', height: 24, paddingRight: 4, gap: 2 },
   treeRowSel: { backgroundColor: colors.accentSoft },
   treeText: { color: colors.textMuted, fontSize: font.sm, flex: 1 },

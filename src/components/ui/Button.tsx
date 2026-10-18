@@ -1,6 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { colors, font, spacing } from '@/theme/tokens';
+import { mergeTitleRef } from '@/utils/domTitle';
 
 export interface ButtonProps {
   label?: string;
@@ -11,6 +12,7 @@ export interface ButtonProps {
   danger?: boolean;
   primary?: boolean;
   small?: boolean;
+  /** Hover tooltip (browser native title on web). */
   title?: string;
   style?: StyleProp<ViewStyle>;
   testID?: string;
@@ -20,11 +22,12 @@ export interface ButtonProps {
 export function Button({ label, icon, onPress, active, disabled, danger, primary, small, title, style, testID }: ButtonProps) {
   return (
     <Pressable
+      ref={mergeTitleRef(title)}
       onPress={disabled ? undefined : onPress}
       accessibilityRole="button"
       accessibilityLabel={title ?? label ?? icon}
+      accessibilityHint={title}
       testID={testID}
-      {...(title ? ({ title } as object) : {})}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
         styles.base,
         small && styles.small,
@@ -37,9 +40,13 @@ export function Button({ label, icon, onPress, active, disabled, danger, primary
         style,
       ]}
     >
-      <View style={styles.row}>
+      <View style={styles.row} pointerEvents="none">
         {icon ? <Text style={[styles.icon, active && styles.activeText, primary && styles.primaryText]}>{icon}</Text> : null}
-        {label ? <Text style={[styles.label, small && styles.smallLabel, active && styles.activeText, primary && styles.primaryText, danger && styles.dangerText]}>{label}</Text> : null}
+        {label ? (
+          <Text style={[styles.label, small && styles.smallLabel, active && styles.activeText, primary && styles.primaryText, danger && styles.dangerText]}>
+            {label}
+          </Text>
+        ) : null}
       </View>
     </Pressable>
   );

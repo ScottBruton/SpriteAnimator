@@ -17,6 +17,9 @@ export const colors = {
   pivot: '#ff5c8a',
   attachment: '#5ce0a8',
   attachmentLabel: '#9af5cf',
+  /** Muzzle / projectile spawn markers in the sprite editor. */
+  projectile: '#f0a040',
+  projectileLabel: '#ffd08a',
   orbitHandle: '#5cc8ff',
   selection: '#4f8cff',
   hover: 'rgba(255,255,255,0.08)',

@@ -216,6 +216,11 @@ function useKeyboardShortcuts() {
         s.openDialog('projects');
         return;
       }
+      if (meta && e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        s.openDialog('saveAs');
+        return;
+      }
       if (meta && e.key.toLowerCase() === 'a' && assembly) {
         e.preventDefault();
         s.select(assembly.sprites.filter((x) => !x.locked).map((x) => x.id));

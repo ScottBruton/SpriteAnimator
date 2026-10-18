@@ -1,9 +1,11 @@
 import type { Draft } from 'immer';
 import type {
   AnimationAction,
+  AssemblyCategory,
   AttachmentPoint,
   Interpolation,
   Project,
+  ProjectilePoint,
   SpriteAsset,
   SpriteInstance,
   Transform2D,
@@ -11,7 +13,16 @@ import type {
   UnitAssembly,
   Vector2,
 } from '@elemental/asset-schema';
-import { createAction, createId, createLayer, createSpriteInstance } from '@elemental/asset-schema';
+import {
+  ASSEMBLY_CATEGORY_ROOT,
+  createAction,
+  createAssembly,
+  createEntityAssembly,
+  createId,
+  createLayer,
+  createSpriteInstance,
+  entityAssetSubfolders,
+} from '@elemental/asset-schema';
 import {
   attachmentWorldFrame,
   computeWorldTransforms,
@@ -253,6 +264,52 @@ export function duplicateAttachment(assetId: string, attachmentId: string): void
     const att = a?.attachments.find((x) => x.id === attachmentId);
     if (a && att) {
       a.attachments.push({ ...att, id: createId('att'), name: `${att.name}_copy`, position: { x: att.position.x + 8, y: att.position.y + 8 } });
+    }
+  });
+}
+
+function ensureProjectilePoints(a: Draft<SpriteAsset>): Draft<ProjectilePoint>[] {
+  if (!Array.isArray(a.projectilePoints)) a.projectilePoints = [];
+  return a.projectilePoints;
+}
+
+export function addProjectilePoint(assetId: string, name: string, position: Vector2): string {
+  const id = createId('proj');
+  store().commit('Add projectile point', (d) => {
+    const a = findAsset(d, assetId);
+    if (a) ensureProjectilePoints(a).push({ id, name, position: { ...position }, angle: 0 });
+  });
+  return id;
+}
+
+export function updateProjectilePoint(assetId: string, pointId: string, patch: Partial<ProjectilePoint>, transient = false): void {
+  const recipe = (d: Draft<Project>) => {
+    const a = findAsset(d, assetId);
+    const pt = a ? ensureProjectilePoints(a).find((x) => x.id === pointId) : undefined;
+    if (pt) Object.assign(pt, patch);
+  };
+  if (transient) store().update(recipe);
+  else store().commit('Edit projectile point', recipe);
+}
+
+export function removeProjectilePoint(assetId: string, pointId: string): void {
+  store().commit('Remove projectile point', (d) => {
+    const a = findAsset(d, assetId);
+    if (a) a.projectilePoints = ensureProjectilePoints(a).filter((x) => x.id !== pointId);
+  });
+}
+
+export function duplicateProjectilePoint(assetId: string, pointId: string): void {
+  store().commit('Duplicate projectile point', (d) => {
+    const a = findAsset(d, assetId);
+    const pt = a ? ensureProjectilePoints(a).find((x) => x.id === pointId) : undefined;
+    if (a && pt) {
+      ensureProjectilePoints(a).push({
+        ...pt,
+        id: createId('proj'),
+        name: `${pt.name}_copy`,
+        position: { x: pt.position.x + 8, y: pt.position.y + 8 },
+      });
     }
   });
 }
@@ -687,6 +744,116 @@ export function setKeyframeInterpolation(actionId: string, keys: { targetId: str
 }
 
 // ---- Assembly --------------------------------------------------------------------------------
+
+function ensureAssemblyFolders(d: Draft<Project>): string[] {
+  if (!Array.isArray(d.settings.assemblyFolders)) d.settings.assemblyFolders = [];
+  return d.settings.assemblyFolders;
+}
+
+/** Create a unit/structure/resource/terrain from a template and select it. */
+export function createNewEntity(category: AssemblyCategory, name: string): string {
+  const fps = store().project.settings.defaultFps ?? 30;
+  const asm = createEntityAssembly(category, name, fps);
+  const folder = normalizeAssetFolder(asm.folder);
+  const root = ASSEMBLY_CATEGORY_ROOT[category];
+  store().commit(`Create ${category}`, (d) => {
+    const asmFolders = ensureAssemblyFolders(d);
+    for (const f of [root, folder]) {
+      if (f && !asmFolders.includes(f)) asmFolders.push(f);
+    }
+    const assetFolders = ensureAssetFolders(d);
+    // Unit art lives in Asset Library: Units/Name/000…315 (+ Projectiles for units).
+    for (const f of entityAssetSubfolders(folder, category)) {
+      if (f && !assetFolders.includes(f)) assetFolders.push(f);
+    }
+    d.assemblies.push(asm);
+    d.activeAssemblyId = asm.id;
+  });
+  useEditorStore.getState().select([]);
+  useEditorStore.getState().setActiveAction(asm.defaultActionId ?? asm.actions[0]?.id ?? null);
+  useEditorStore.getState().setDirection('S');
+  return asm.id;
+}
+
+/**
+ * Delete a unit/structure/resource/terrain assembly.
+ * By default also removes assets + art folders under that entity’s folder
+ * (skipped if another assembly still uses the same folder).
+ */
+export function deleteAssembly(assemblyId: string, opts?: { deleteArt?: boolean }): string[] {
+  const { project } = store();
+  const asm = project.assemblies.find((a) => a.id === assemblyId);
+  if (!asm) return [];
+  const deleteArt = opts?.deleteArt !== false;
+  const folder = normalizeAssetFolder(asm.folder ?? '');
+  const folderShared =
+    !!folder && project.assemblies.some((a) => a.id !== assemblyId && normalizeAssetFolder(a.folder ?? '') === folder);
+  const under = (path: string) => !!folder && (path === folder || path.startsWith(folder + '/'));
+
+  const removedBlobKeys: string[] = [];
+  if (deleteArt && folder && !folderShared) {
+    for (const a of project.assets) {
+      if (under(normalizeAssetFolder(a.folder ?? ''))) removedBlobKeys.push(a.imagePath);
+    }
+  }
+  const removedAssetIds = new Set(
+    deleteArt && folder && !folderShared
+      ? project.assets.filter((a) => under(normalizeAssetFolder(a.folder ?? ''))).map((a) => a.id)
+      : [],
+  );
+
+  store().commit(`Delete ${asm.category ?? 'assembly'} “${asm.name}”`, (d) => {
+    d.assemblies = d.assemblies.filter((a) => a.id !== assemblyId);
+    if (d.assemblies.length === 0) {
+      const blank = createAssembly('Untitled');
+      d.assemblies.push(blank);
+      d.activeAssemblyId = blank.id;
+    } else if (d.activeAssemblyId === assemblyId) {
+      d.activeAssemblyId = d.assemblies[0]!.id;
+    }
+
+    if (removedAssetIds.size) {
+      d.assets = d.assets.filter((a) => !removedAssetIds.has(a.id));
+      for (const a of d.assemblies) a.sprites = a.sprites.filter((s) => !removedAssetIds.has(s.assetId));
+      d.settings.assetFolders = ensureAssetFolders(d).filter((f) => !under(normalizeAssetFolder(f)));
+      d.settings.assemblyFolders = ensureAssemblyFolders(d).filter((f) => f !== folder && !under(normalizeAssetFolder(f)));
+    }
+  });
+
+  const next = store().project.assemblies.find((a) => a.id === store().project.activeAssemblyId);
+  useEditorStore.getState().select([]);
+  useEditorStore.getState().setActiveAction(next?.defaultActionId ?? next?.actions[0]?.id ?? null);
+  return removedBlobKeys;
+}
+
+/** Ensure Units/Name/000…315 (+ Projectiles) exist in the asset library for an entity folder. */
+export function ensureEntityArtFolders(asm: UnitAssembly): void {
+  const folder = normalizeAssetFolder(asm.folder ?? '');
+  if (!folder) return;
+  const needed = entityAssetSubfolders(folder, asm.category ?? 'unit');
+  const current = store().project.settings.assetFolders ?? [];
+  if (needed.every((f) => current.includes(f))) return;
+  store().commit('Ensure facing art folders', (d) => {
+    const assetFolders = ensureAssetFolders(d);
+    for (const f of needed) {
+      if (!assetFolders.includes(f)) assetFolders.push(f);
+    }
+  });
+}
+
+export function setActiveAssembly(id: string): void {
+  const { project } = store();
+  const asm = project.assemblies.find((a) => a.id === id);
+  if (!asm) return;
+  if (project.activeAssemblyId !== id) {
+    // Selection change only — do not mark the document dirty.
+    useProjectStore.setState({ project: { ...project, activeAssemblyId: id } });
+    useEditorStore.getState().select([]);
+    useEditorStore.getState().setActiveAction(asm.defaultActionId ?? asm.actions[0]?.id ?? null);
+  }
+  // Backfill angle folders for entities created before this existed.
+  ensureEntityArtFolders(asm);
+}
 
 export function renameAssembly(name: string): void {
   store().commit('Rename assembly', (d) => withActiveAssembly(d, (asm) => void (asm.name = name)));

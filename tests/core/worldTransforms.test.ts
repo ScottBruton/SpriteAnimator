@@ -29,6 +29,7 @@ const body: SpriteAsset = {
   height: 200,
   pivot: { x: 50, y: 100 },
   attachments: [{ id: 'shoulder', name: 'shoulder', position: { x: 90, y: 40 }, rotation: 0 }],
+  projectilePoints: [],
   tags: [],
   folder: '',
 };
@@ -40,6 +41,7 @@ const arm: SpriteAsset = {
   height: 80,
   pivot: { x: 10, y: 5 },
   attachments: [{ id: 'hand', name: 'hand', position: { x: 10, y: 75 }, rotation: 0 }],
+  projectilePoints: [],
   tags: [],
   folder: '',
 };

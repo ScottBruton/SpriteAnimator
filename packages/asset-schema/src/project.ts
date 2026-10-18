@@ -19,6 +19,8 @@ export const ProjectSettingsSchema = z.object({
   defaultFps: z.number().positive().default(30),
   /** Empty or known asset library folders (paths like `arms` or `angles/front`). */
   assetFolders: z.array(z.string()).default([]),
+  /** Project explorer folders for assemblies (paths like `Units` or `Resources/Ore`). */
+  assemblyFolders: z.array(z.string()).default([]),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;
 
@@ -46,8 +48,9 @@ export const ProjectSchema = z.object({
     snapTolerance: 12,
     showRulers: true,
     showGrid: true,
-    defaultFps: 30,
+      defaultFps: 30,
     assetFolders: [],
+    assemblyFolders: [],
   }),
 });
 export type Project = z.infer<typeof ProjectSchema>;

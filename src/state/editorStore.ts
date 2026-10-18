@@ -61,7 +61,7 @@ interface EditorState {
 
   // Dialogs
   spriteEditorAssetId: string | null;
-  dialog: null | 'projects' | 'export' | 'settings' | 'about' | 'importSheet' | 'newProject' | 'saveAs';
+  dialog: null | 'projects' | 'export' | 'settings' | 'about' | 'importSheet' | 'newProject' | 'saveAs' | 'createEntity';
   status: { message: string; kind: 'info' | 'error' | 'success'; at: number } | null;
   /** Asset being dragged from the library (window coordinates). */
   dragAsset: { assetId: string; x: number; y: number } | null;
